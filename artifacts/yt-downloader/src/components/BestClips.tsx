@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
@@ -22,17 +22,23 @@ export interface BestClip {
 }
 
 const DURATION_OPTIONS = [
-  { label: "1 min", value: 60, color: "from-blue-500/30 to-blue-600/10", badge: "text-blue-300 border-blue-500/30 bg-blue-500/10", accent: "border-blue-500/20 bg-blue-500/5" },
-  { label: "3 min", value: 180, color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
-  { label: "5 min", value: 300, color: "from-emerald-500/30 to-emerald-600/10", badge: "text-emerald-300 border-emerald-500/30 bg-emerald-500/10", accent: "border-emerald-500/20 bg-emerald-500/5" },
-  { label: "10 min", value: 600, color: "from-amber-500/30 to-amber-600/10", badge: "text-amber-300 border-amber-500/30 bg-amber-500/10", accent: "border-amber-500/20 bg-amber-500/5" },
+  { label: "1 min",  value: 60,  color: "from-blue-500/30 to-blue-600/10",    badge: "text-blue-300 border-blue-500/30 bg-blue-500/10",    accent: "border-blue-500/20 bg-blue-500/5"    },
+  { label: "3 min",  value: 180, color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
+  { label: "5 min",  value: 300, color: "from-emerald-500/30 to-emerald-600/10",badge:"text-emerald-300 border-emerald-500/30 bg-emerald-500/10",accent:"border-emerald-500/20 bg-emerald-500/5"},
+  { label: "10 min", value: 600, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
 ];
+
+type ClipKey = string; // `${durationSec}|${startSec}`
+
+interface DownloadState {
+  status: "idle" | "downloading" | "done" | "error";
+  percent: number;
+  message?: string;
+}
 
 interface Props {
   url: string;
 }
-
-type ClipKey = `${number}-${number}`; // `${durationSec}-${startSec}`
 
 export function BestClips({ url }: Props) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60, 180, 300, 600]);
@@ -41,13 +47,19 @@ export function BestClips({ url }: Props) {
   const [hasTranscript, setHasTranscript] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedClip, setExpandedClip] = useState<ClipKey | null>(null);
-  const [downloadingClip, setDownloadingClip] = useState<ClipKey | null>(null);
-  const [downloadedClips, setDownloadedClips] = useState<Set<ClipKey>>(new Set());
+  const [downloadStates, setDownloadStates] = useState<Record<ClipKey, DownloadState>>({});
   const { toast } = useToast();
 
   const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "");
 
-  const clipKey = (clip: BestClip): ClipKey => `${clip.durationSec}-${clip.startSec}`;
+  const clipKey = (clip: BestClip): ClipKey => `${clip.durationSec}|${clip.startSec}`;
+
+  const setDownload = useCallback((key: ClipKey, patch: Partial<DownloadState>) => {
+    setDownloadStates(prev => ({
+      ...prev,
+      [key]: { ...(prev[key] ?? { status: "idle", percent: 0 }), ...patch },
+    }));
+  }, []);
 
   const toggleDuration = (value: number) => {
     setSelectedDurations(prev =>
@@ -61,7 +73,7 @@ export function BestClips({ url }: Props) {
     setError(null);
     setClips([]);
     setExpandedClip(null);
-    setDownloadedClips(new Set());
+    setDownloadStates({});
 
     try {
       const res = await fetch(`${BASE}/api/youtube/clips`, {
@@ -73,9 +85,7 @@ export function BestClips({ url }: Props) {
       if (!res.ok) throw new Error(data.error ?? "Analysis failed");
       setClips(data.clips ?? []);
       setHasTranscript(data.hasTranscript ?? false);
-      if (!data.clips?.length) {
-        setError("No clips could be identified for this video.");
-      }
+      if (!data.clips?.length) setError("No clips could be identified for this video.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to analyze video");
     } finally {
@@ -85,8 +95,13 @@ export function BestClips({ url }: Props) {
 
   const handleDownloadClip = async (clip: BestClip) => {
     const key = clipKey(clip);
-    setDownloadingClip(key);
+    const current = downloadStates[key];
+    if (current?.status === "downloading") return; // already in progress
+
+    setDownload(key, { status: "downloading", percent: 0, message: "Starting…" });
+
     try {
+      // Start the clip download job
       const startRes = await fetch(`${BASE}/api/youtube/download-clip`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,53 +113,64 @@ export function BestClips({ url }: Props) {
         }),
       });
       const startData = await startRes.json();
-      if (!startRes.ok) throw new Error(startData.error ?? "Failed to start");
+      if (!startRes.ok) throw new Error(startData.error ?? "Failed to start download");
 
       const { jobId } = startData;
 
-      // Poll for completion
-      for (let i = 0; i < 120; i++) {
+      // Poll for progress until done
+      for (let i = 0; i < 150; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`);
-        const data = await prog.json();
-        if (data.status === "done") {
-          window.open(`${BASE}/api/youtube/file/${jobId}`, "_blank");
-          setDownloadedClips(prev => new Set([...prev, key]));
-          toast({ title: "Clip ready!", description: `"${clip.title}" is downloading.` });
+        const progRes = await fetch(`${BASE}/api/youtube/progress/${jobId}`);
+        const prog = await progRes.json();
+
+        if (prog.status === "done") {
+          setDownload(key, { status: "done", percent: 100 });
+          // Trigger browser download
+          const link = document.createElement("a");
+          link.href = `${BASE}/api/youtube/file/${jobId}`;
+          link.download = `${clip.title}.mp4`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          toast({ title: "Clip downloaded!", description: `"${clip.title}" saved to your downloads.` });
           return;
         }
-        if (data.status === "error") throw new Error(data.message ?? "Download failed");
+
+        if (prog.status === "error") {
+          throw new Error(prog.message ?? "Download failed");
+        }
+
+        // Update progress
+        const pct = prog.percent ?? 0;
+        const statusMsg = prog.status === "merging"
+          ? "Merging…"
+          : pct > 0
+            ? `Downloading… ${pct}%`
+            : "Preparing…";
+        setDownload(key, { status: "downloading", percent: pct, message: statusMsg });
       }
-      throw new Error("Download timed out");
+
+      throw new Error("Download timed out after 5 minutes");
     } catch (err) {
-      toast({
-        title: "Download failed",
-        description: err instanceof Error ? err.message : "Something went wrong",
-        variant: "destructive",
-      });
-    } finally {
-      setDownloadingClip(null);
+      const msg = err instanceof Error ? err.message : "Something went wrong";
+      setDownload(key, { status: "error", percent: 0, message: msg });
+      toast({ title: "Download failed", description: msg, variant: "destructive" });
     }
   };
 
   const getDurationStyle = (durationSec: number) =>
     DURATION_OPTIONS.find(d => d.value === durationSec) ?? DURATION_OPTIONS[0];
 
-  // Group clips by duration, preserving the order the AI returned them in (best first)
+  // Group clips by duration, preserving AI-returned order (best first)
   const groupedClips = clips.reduce<Array<{ durationSec: number; durationLabel: string; clips: BestClip[] }>>(
     (acc, clip) => {
       const existing = acc.find(g => g.durationSec === clip.durationSec);
-      if (existing) {
-        existing.clips.push(clip);
-      } else {
-        acc.push({ durationSec: clip.durationSec, durationLabel: clip.durationLabel, clips: [clip] });
-      }
+      if (existing) existing.clips.push(clip);
+      else acc.push({ durationSec: clip.durationSec, durationLabel: clip.durationLabel, clips: [clip] });
       return acc;
     },
     []
   );
-
-  const totalClips = clips.length;
 
   return (
     <div className="w-full space-y-6">
@@ -200,7 +226,7 @@ export function BestClips({ url }: Props) {
         </Button>
       </div>
 
-      {/* Loading State */}
+      {/* Loading state */}
       <AnimatePresence>
         {isLoading && (
           <motion.div
@@ -221,18 +247,14 @@ export function BestClips({ url }: Props) {
             </div>
             <div className="flex gap-1.5 mt-2">
               {[0, 1, 2].map(i => (
-                <div
-                  key={i}
-                  className="w-2 h-2 rounded-full bg-primary/60 animate-bounce"
-                  style={{ animationDelay: `${i * 0.15}s` }}
-                />
+                <div key={i} className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
               ))}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Error State */}
+      {/* Error state */}
       <AnimatePresence>
         {error && !isLoading && (
           <motion.div
@@ -253,17 +275,12 @@ export function BestClips({ url }: Props) {
       {/* Results — grouped by duration */}
       <AnimatePresence>
         {groupedClips.length > 0 && !isLoading && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="space-y-6"
-          >
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
             {/* Summary header */}
-            <div className="flex items-center gap-3 px-1">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <div className="flex items-center gap-3 px-1 flex-wrap">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <h3 className="text-lg font-display font-semibold text-white">
-                {totalClips} clip{totalClips !== 1 ? "s" : ""} found across {groupedClips.length} duration{groupedClips.length !== 1 ? "s" : ""}
+                {clips.length} clip{clips.length !== 1 ? "s" : ""} found across {groupedClips.length} duration{groupedClips.length !== 1 ? "s" : ""}
               </h3>
               {!hasTranscript && (
                 <div className="flex items-center gap-1.5 text-amber-300 text-xs bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full ml-auto">
@@ -276,67 +293,82 @@ export function BestClips({ url }: Props) {
             {/* Duration groups */}
             {groupedClips.map((group, groupIdx) => {
               const style = getDurationStyle(group.durationSec);
-
               return (
                 <motion.div
                   key={group.durationSec}
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: groupIdx * 0.07 }}
-                  className="space-y-3"
+                  className="space-y-2"
                 >
                   {/* Group header */}
-                  <div className={cn("flex items-center gap-3 px-4 py-3 rounded-xl border", style.accent)}>
-                    <Film className="w-4 h-4 text-white/50" />
+                  <div className={cn("flex items-center gap-3 px-4 py-2.5 rounded-xl border", style.accent)}>
+                    <Film className="w-4 h-4 text-white/40" />
                     <Badge className={cn("text-xs font-bold px-3 py-1 rounded-lg border", style.badge)}>
                       {group.durationLabel}
                     </Badge>
-                    <span className="text-white/60 text-sm">
-                      {group.clips.length} best segment{group.clips.length !== 1 ? "s" : ""} found
+                    <span className="text-white/50 text-sm">
+                      {group.clips.length} segment{group.clips.length !== 1 ? "s" : ""} found
                     </span>
                   </div>
 
-                  {/* Clip cards within this duration group */}
+                  {/* Clip cards */}
                   <div className="space-y-2 pl-2">
                     {group.clips.map((clip, clipIdx) => {
                       const key = clipKey(clip);
+                      const dl = downloadStates[key] ?? { status: "idle", percent: 0 };
                       const isExpanded = expandedClip === key;
-                      const isDownloading = downloadingClip === key;
-                      const isDownloaded = downloadedClips.has(key);
 
                       return (
                         <motion.div
                           key={key}
                           initial={{ opacity: 0, x: -12 }}
                           animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: groupIdx * 0.07 + clipIdx * 0.05 }}
+                          transition={{ delay: groupIdx * 0.07 + clipIdx * 0.04 }}
                           className="group relative glass-panel rounded-xl overflow-hidden border-white/5 hover:border-white/10 transition-all duration-300"
                         >
                           <div className={cn("absolute inset-0 bg-gradient-to-br opacity-10 pointer-events-none", style.color)} />
 
+                          {/* Download progress bar */}
+                          {dl.status === "downloading" && (
+                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
+                              <motion.div
+                                className="h-full bg-primary"
+                                initial={{ width: 0 }}
+                                animate={{ width: `${dl.percent}%` }}
+                                transition={{ duration: 0.4 }}
+                              />
+                            </div>
+                          )}
+
                           <div className="relative p-4">
                             <div className="flex items-start gap-3">
-                              {/* Rank indicator */}
+                              {/* Rank */}
                               <div className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/30 text-xs font-bold">
                                 {clipIdx + 1}
                               </div>
 
-                              {/* Content */}
+                              {/* Info */}
                               <div className="flex-1 min-w-0">
                                 <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 truncate">
                                   {clip.title}
                                 </h4>
                                 <div className="flex items-center gap-3 text-white/50 text-xs">
                                   <span className="flex items-center gap-1">
-                                    <Play className="w-3 h-3" />
-                                    {clip.startFormatted}
+                                    <Play className="w-3 h-3" />{clip.startFormatted}
                                   </span>
                                   <span>→</span>
                                   <span className="flex items-center gap-1">
-                                    <Clock className="w-3 h-3" />
-                                    {clip.endFormatted}
+                                    <Clock className="w-3 h-3" />{clip.endFormatted}
                                   </span>
                                 </div>
+                                {/* Download status text */}
+                                {dl.status === "downloading" && dl.message && (
+                                  <p className="text-primary/70 text-xs mt-1 font-medium">{dl.message}</p>
+                                )}
+                                {dl.status === "error" && dl.message && (
+                                  <p className="text-red-400 text-xs mt-1">{dl.message}</p>
+                                )}
                               </div>
 
                               {/* Actions */}
@@ -347,24 +379,33 @@ export function BestClips({ url }: Props) {
                                 >
                                   {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                 </button>
+
                                 <Button
                                   size="sm"
-                                  variant={isDownloaded ? "glass" : "default"}
+                                  variant={dl.status === "done" ? "glass" : "default"}
                                   onClick={() => handleDownloadClip(clip)}
-                                  disabled={isDownloading || downloadingClip !== null}
+                                  disabled={dl.status === "downloading"}
                                   className={cn(
-                                    "rounded-xl h-8 px-3 text-xs font-semibold",
-                                    isDownloaded && "bg-emerald-500/20 border-emerald-500/30 text-emerald-300"
+                                    "rounded-xl h-8 px-3 text-xs font-semibold min-w-[90px]",
+                                    dl.status === "done" && "bg-emerald-500/20 border-emerald-500/30 text-emerald-300",
+                                    dl.status === "error" && "bg-red-500/10 border-red-500/30 text-red-300"
                                   )}
                                 >
-                                  {isDownloading ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                  ) : isDownloaded ? (
-                                    <span className="flex items-center gap-1">
-                                      <CheckCircle2 className="w-3 h-3" /> Done
+                                  {dl.status === "downloading" ? (
+                                    <span className="flex items-center gap-1.5">
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                      {dl.percent > 0 ? `${dl.percent}%` : "…"}
+                                    </span>
+                                  ) : dl.status === "done" ? (
+                                    <span className="flex items-center gap-1.5">
+                                      <CheckCircle2 className="w-3 h-3" /> Downloaded
+                                    </span>
+                                  ) : dl.status === "error" ? (
+                                    <span className="flex items-center gap-1.5">
+                                      <Download className="w-3 h-3" /> Retry
                                     </span>
                                   ) : (
-                                    <span className="flex items-center gap-1">
+                                    <span className="flex items-center gap-1.5">
                                       <Download className="w-3 h-3" /> Download
                                     </span>
                                   )}
@@ -382,9 +423,7 @@ export function BestClips({ url }: Props) {
                                   className="overflow-hidden"
                                 >
                                   <div className="pt-3 mt-3 border-t border-white/5 space-y-2 ml-9">
-                                    <p className="text-white/65 text-sm leading-relaxed">
-                                      {clip.description}
-                                    </p>
+                                    <p className="text-white/65 text-sm leading-relaxed">{clip.description}</p>
                                     {clip.reason && (
                                       <div className="flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">
                                         <Sparkles className="w-3 h-3 text-primary shrink-0 mt-0.5" />
