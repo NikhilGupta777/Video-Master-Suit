@@ -267,7 +267,15 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-function buildFormats(ytFormats: any[]): VideoFormatOut[] {
+function estimateFilesize(fmt: any, duration: number | null): number | null {
+  if (fmt.filesize) return fmt.filesize;
+  if (fmt.filesize_approx) return fmt.filesize_approx;
+  // Estimate from total bitrate × duration: tbr is in kbps
+  if (fmt.tbr && duration) return Math.round((fmt.tbr * 1000 / 8) * duration);
+  return null;
+}
+
+function buildFormats(ytFormats: any[], duration?: number | null): VideoFormatOut[] {
   const qualityOrder: Record<number, number> = {
     2160: 10,
     1440: 9,
@@ -311,7 +319,7 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
         ext: fmt.ext ?? "mp4",
         resolution: height ? `${fmt.width ?? "?"}x${height}` : qual,
         fps: fmt.fps ?? null,
-        filesize: fmt.filesize ?? fmt.filesize_approx ?? null,
+        filesize: estimateFilesize(fmt, duration ?? null),
         vcodec: fmt.vcodec ?? null,
         acodec: fmt.acodec ?? null,
         quality: qual,
@@ -335,7 +343,7 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
         ext: "mp4",
         resolution: `${fmt.width ?? "?"}x${height}`,
         fps: fmt.fps ?? null,
-        filesize: null,
+        filesize: estimateFilesize(fmt, duration ?? null),
         vcodec: fmt.vcodec ?? null,
         acodec: "aac",
         quality: qual,
@@ -356,7 +364,7 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
       ext: "mp3",
       resolution: "audio only",
       fps: null,
-      filesize: bestAudioFmt.filesize ?? bestAudioFmt.filesize_approx ?? null,
+      filesize: estimateFilesize(bestAudioFmt, duration ?? null),
       vcodec: null,
       acodec: "mp3",
       quality: bitrateKbps,
@@ -408,7 +416,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     ]);
     const data = JSON.parse(json);
 
-    const formats = buildFormats(data.formats ?? []);
+    const formats = buildFormats(data.formats ?? [], data.duration ?? null);
 
     const thumbnail =
       data.thumbnail ??
