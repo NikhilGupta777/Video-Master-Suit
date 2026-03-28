@@ -231,9 +231,24 @@ export default function Home() {
 
         {/* Content area */}
         <div className="w-full">
-          
-          {/* ── Download Mode ── */}
+
+          {/* Download Progress — always its own AnimatePresence so it overlays independently */}
+          <AnimatePresence>
+            {jobId && mode === "download" && (
+              <ActiveDownload 
+                jobId={jobId} 
+                onReset={() => {
+                  setJobId(null);
+                  setActiveFormatId(null);
+                }} 
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Single AnimatePresence so tab exit + enter are coordinated */}
           <AnimatePresence mode="wait">
+
+          {/* ── Download Mode ── */}
             {showVideoInfo && (
               <motion.div 
                 key="download-results"
@@ -345,23 +360,8 @@ export default function Home() {
                 </div>
               </motion.div>
             )}
-          </AnimatePresence>
-
-          {/* Download Progress */}
-          <AnimatePresence>
-            {jobId && mode === "download" && (
-              <ActiveDownload 
-                jobId={jobId} 
-                onReset={() => {
-                  setJobId(null);
-                  setActiveFormatId(null);
-                }} 
-              />
-            )}
-          </AnimatePresence>
 
           {/* ── Best Clips Mode ── */}
-          <AnimatePresence mode="wait">
             {mode === "clips" && (
               <motion.div
                 key="clips-panel"
@@ -373,10 +373,8 @@ export default function Home() {
                 <BestClips ref={bestClipsRef} url={url} />
               </motion.div>
             )}
-          </AnimatePresence>
 
           {/* ── Bhagwat Videos Mode ── */}
-          <AnimatePresence mode="wait">
             {mode === "bhagwat" && (
               <motion.div
                 key="bhagwat-panel"
@@ -388,6 +386,7 @@ export default function Home() {
                 <BhagwatVideos />
               </motion.div>
             )}
+
           </AnimatePresence>
 
         </div>
