@@ -21,7 +21,7 @@ export default function Home() {
   const [submittedUrl, setSubmittedUrl] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>("download");
+  const [mode, setMode] = useState<Mode>("clips");
   const [playing, setPlaying] = useState(false);
   const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
   const { toast } = useToast();
@@ -355,30 +355,7 @@ export default function Home() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.3 }}
               >
-                {showClips ? (
-                  <BestClips url={submittedUrl} />
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="glass-panel rounded-3xl p-6 sm:p-10 flex flex-col items-center gap-4 sm:gap-5 text-center"
-                  >
-                    <div className="bg-violet-500/20 p-5 rounded-3xl border border-violet-500/30">
-                      <Sparkles className="w-10 h-10 text-violet-400" />
-                    </div>
-                    <div>
-                      <h3 className="text-2xl font-display font-bold text-white mb-2">Find the Best Clips</h3>
-                      <p className="text-white/50 max-w-md">
-                        Paste a YouTube URL above and click Analyze — our AI will study the transcript and identify the most engaging segments at 1, 3, 5, and 10 minute lengths.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap justify-center gap-3 text-sm text-white/40">
-                      {["1 min highlight", "3 min summary", "5 min deep-dive", "10 min feature"].map(t => (
-                        <span key={t} className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-full">{t}</span>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
+                <BestClips url={submittedUrl} />
               </motion.div>
             )}
           </AnimatePresence>
