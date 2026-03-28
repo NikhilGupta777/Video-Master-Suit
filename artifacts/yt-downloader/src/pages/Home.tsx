@@ -207,14 +207,11 @@ export default function Home() {
                 className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-3 text-white placeholder:text-white/30 text-base sm:text-lg min-w-0"
                 autoFocus
               />
-              <Button 
+              {mode !== "clips" && <Button 
                 type="submit" 
                 size="lg"
                 disabled={isSearchPending || !url.trim()}
-                className={cn(
-                  "h-10 sm:h-12 px-4 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base",
-                  mode === "clips" && "bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 border-violet-500/30"
-                )}
+                className="h-10 sm:h-12 px-4 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base"
               >
                 {isSearchPending ? (
                   <span className="flex items-center gap-2">
@@ -227,7 +224,7 @@ export default function Home() {
                     {buttonPlaceholder} <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </span>
                 )}
-              </Button>
+              </Button>}
             </div>
           </motion.form>
         </motion.div>
