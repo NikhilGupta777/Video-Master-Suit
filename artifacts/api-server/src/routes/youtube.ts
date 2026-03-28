@@ -20,6 +20,13 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const router: IRouter = Router();
 
+// Make yt-dlp (installed in the uv venv) visible to the system Python
+const PYTHON_ENV = {
+  ...process.env,
+  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  PYTHONPATH: "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages",
+};
+
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 if (!existsSync(DOWNLOAD_DIR)) {
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -108,7 +115,7 @@ function runYtDlp(args: string[]): Promise<string> {
       "python3",
       ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
       {
-        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        env: PYTHON_ENV,
       },
     );
     let stdout = "";
@@ -231,7 +238,7 @@ function pickBestSubtitleUrl(
 function runYtDlpForSubs(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
-      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      env: PYTHON_ENV,
     });
     let stderr = "";
     proc.stderr?.on("data", (d) => {
@@ -512,7 +519,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
       "python3",
       ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
       {
-        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        env: PYTHON_ENV,
       },
     );
     let stderr = "";
@@ -1365,7 +1372,7 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
       "python3",
       ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
       {
-        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        env: PYTHON_ENV,
       },
     );
     let stderr = "";
