@@ -77,9 +77,15 @@ interface DownloadJob {
 
 const jobs = new Map<string, DownloadJob>();
 
+// Base args applied to every yt-dlp call for proper JS challenge solving
+const BASE_YTDLP_ARGS = [
+  "--js-runtimes", "node",
+  "--remote-components", "ejs:github",
+];
+
 function runYtDlp(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
       env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
     let stdout = "";
@@ -326,7 +332,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   args.push("-o", outputPath, job.url);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
       env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
     let stderr = "";
@@ -830,7 +836,7 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   ];
 
   new Promise<void>((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
       env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
     let stderr = "";
