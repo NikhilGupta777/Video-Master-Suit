@@ -57,6 +57,7 @@ YouTube video downloader web app (React + Vite). Features:
 - Shows all available quality options: 4K (2160p), 1440p, 1080p, 720p, 480p, 360p, 240p, 144p, and audio-only (MP3)
 - Best quality badge on top format
 - Real-time download progress (percent, speed, ETA) via polling
+- **In-browser video playback**: clicking the thumbnail/play button opens a full video player modal that streams via `/api/youtube/stream`
 - Uses `/api/youtube/*` backend routes
 - `previewPath: "/"`
 
@@ -70,6 +71,7 @@ Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` 
 - App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
 - Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
 - YouTube routes: `src/routes/youtube.ts` — uses **yt-dlp** (via `python3 -m yt_dlp`) for all YouTube operations; requires Python 3 + yt-dlp installed (`python3 -m pip install yt-dlp`). YouTube downloading previously used `youtubei.js` but it was blocked by YouTube CDNs (HTTP 403). yt-dlp handles all clients/decryption internally and is not blocked.
+- `GET /api/youtube/stream?url=<ytUrl>&formatId=<id>` — resolves direct CDN stream URL via `yt-dlp --get-url` and proxies it with Range request support so the browser `<video>` tag can seek.
 - Depends on: `@workspace/db`, `@workspace/api-zod`
 - `pnpm --filter @workspace/api-server run dev` — run the dev server
 - `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.mjs`)

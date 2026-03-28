@@ -668,6 +668,91 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
   });
 });
 
+// ─── Video Stream Proxy ───────────────────────────────────────────────────
+// Gets the direct CDN URL for a format via yt-dlp --get-url and proxies it
+// with full Range request support so the browser <video> tag can seek.
+
+router.get("/youtube/stream", async (req: Request, res: Response) => {
+  const { url, formatId } = req.query as { url?: string; formatId?: string };
+
+  if (!url) {
+    res.status(400).json({ error: "url query param is required" });
+    return;
+  }
+
+  // Merged formats (e.g. "137+140") need ffmpeg — fall back to best combined
+  const safeFormatId =
+    formatId && !formatId.includes("+") && !formatId.startsWith("audio:")
+      ? formatId
+      : "best[ext=mp4]/best[height<=720][ext=mp4]/best";
+
+  try {
+    // --get-url returns one URL per line (one for combined, two for separate)
+    const rawUrls = await runYtDlp([
+      "--get-url",
+      "--no-playlist",
+      "--no-warnings",
+      "-f",
+      safeFormatId,
+      url,
+    ]);
+
+    const streamUrl = rawUrls.trim().split("\n")[0].trim();
+    if (!streamUrl || !streamUrl.startsWith("http")) {
+      res.status(502).json({ error: "Could not resolve stream URL" });
+      return;
+    }
+
+    // Proxy the request to the CDN with Range forwarding
+    const headers: Record<string, string> = {
+      "User-Agent": "Mozilla/5.0",
+      "Accept-Encoding": "identity",
+    };
+    const rangeHeader = req.headers["range"];
+    if (rangeHeader) headers["Range"] = rangeHeader;
+
+    const get = streamUrl.startsWith("https") ? httpsGet : httpGet;
+    const proxyReq = get(streamUrl, { headers }, (proxyRes) => {
+      const status = proxyRes.statusCode ?? 200;
+      const proxyHeaders: Record<string, string | string[]> = {
+        "Content-Type":
+          (proxyRes.headers["content-type"] as string) || "video/mp4",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+      };
+      if (proxyRes.headers["content-length"])
+        proxyHeaders["Content-Length"] = proxyRes.headers[
+          "content-length"
+        ] as string;
+      if (proxyRes.headers["content-range"])
+        proxyHeaders["Content-Range"] = proxyRes.headers[
+          "content-range"
+        ] as string;
+
+      res.writeHead(status, proxyHeaders);
+      proxyRes.pipe(res);
+      proxyRes.on("error", () => res.end());
+    });
+
+    proxyReq.on("error", (err) => {
+      req.log.error({ err }, "Stream proxy error");
+      if (!res.headersSent) res.status(502).json({ error: "Stream failed" });
+    });
+
+    proxyReq.setTimeout(10000, () => {
+      proxyReq.destroy();
+      if (!res.headersSent) res.status(504).json({ error: "Stream timeout" });
+    });
+
+    req.on("close", () => proxyReq.destroy());
+  } catch (err) {
+    req.log.error({ err }, "Failed to get stream URL");
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (!res.headersSent)
+      res.status(500).json({ error: "Failed to get stream URL", details: message });
+  }
+});
+
 router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);

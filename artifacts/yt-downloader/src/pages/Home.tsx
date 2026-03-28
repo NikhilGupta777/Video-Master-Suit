@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips } from "@/components/BestClips";
+import { VideoPlayer } from "@/components/VideoPlayer";
 
 type Mode = "download" | "clips";
 
@@ -22,6 +23,8 @@ export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("download");
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
   const { toast } = useToast();
 
   const getInfo = useGetVideoInfo({
@@ -96,6 +99,7 @@ export default function Home() {
   const isSearchPending = getInfo.isPending;
 
   return (
+    <>
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
       
       {/* Premium Background */}
@@ -228,7 +232,14 @@ export default function Home() {
                 <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
                   
-                  <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors">
+                  <button
+                    className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors cursor-pointer"
+                    onClick={() => {
+                      const combined = videoFormats.find(f => !f.formatId.includes("+"));
+                      setPlayerFormatId(combined?.formatId);
+                      setPlayerOpen(true);
+                    }}
+                  >
                     <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
                       <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 group-hover:text-white group-hover:scale-110 transition-all shadow-lg">
@@ -239,7 +250,7 @@ export default function Home() {
                       <Clock className="w-3 h-3" />
                       {formatDuration(video.duration)}
                     </div>
-                  </div>
+                  </button>
 
                   <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
                     <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
@@ -365,6 +376,17 @@ export default function Home() {
         </div>
       </main>
     </div>
+
+    {/* Video Player Modal */}
+    {playerOpen && video && (
+      <VideoPlayer
+        url={url}
+        formatId={playerFormatId}
+        title={video.title}
+        onClose={() => setPlayerOpen(false)}
+      />
+    )}
+    </>
   );
 }
 
