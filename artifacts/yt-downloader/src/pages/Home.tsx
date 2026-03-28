@@ -13,7 +13,6 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips } from "@/components/BestClips";
-import { VideoPlayer } from "@/components/VideoPlayer";
 
 type Mode = "download" | "clips";
 
@@ -23,7 +22,7 @@ export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("download");
-  const [playerOpen, setPlayerOpen] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
   const { toast } = useToast();
 
@@ -32,6 +31,8 @@ export default function Home() {
       onSuccess: () => {
         setJobId(null);
         setActiveFormatId(null);
+        setPlaying(false);
+        setPlayerFormatId(undefined);
       },
       onError: (error) => {
         toast({
@@ -99,7 +100,6 @@ export default function Home() {
   const isSearchPending = getInfo.isPending;
 
   return (
-    <>
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
       
       {/* Premium Background */}
@@ -232,25 +232,35 @@ export default function Home() {
                 <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
                   
-                  <button
-                    className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors cursor-pointer"
-                    onClick={() => {
-                      const combined = videoFormats.find(f => !f.formatId.includes("+"));
-                      setPlayerFormatId(combined?.formatId);
-                      setPlayerOpen(true);
-                    }}
-                  >
-                    <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
-                      <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 group-hover:text-white group-hover:scale-110 transition-all shadow-lg">
-                        <Play className="w-8 h-8 ml-1" />
-                      </div>
-                    </div>
-                    <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {formatDuration(video.duration)}
-                    </div>
-                  </button>
+                  <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors bg-black">
+                    {playing ? (
+                      <InlinePlayer
+                        url={url}
+                        formatId={playerFormatId}
+                        onClose={() => setPlaying(false)}
+                      />
+                    ) : (
+                      <button
+                        className="w-full h-full relative"
+                        onClick={() => {
+                          const combined = videoFormats.find(f => !f.formatId.includes("+"));
+                          setPlayerFormatId(combined?.formatId);
+                          setPlaying(true);
+                        }}
+                      >
+                        <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/30 hover:bg-black/10 transition-colors flex items-center justify-center">
+                          <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 hover:text-white hover:scale-110 transition-all shadow-lg">
+                            <Play className="w-8 h-8 ml-1" />
+                          </div>
+                        </div>
+                        <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {formatDuration(video.duration)}
+                        </div>
+                      </button>
+                    )}
+                  </div>
 
                   <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
                     <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
@@ -376,17 +386,6 @@ export default function Home() {
         </div>
       </main>
     </div>
-
-    {/* Video Player Modal */}
-    {playerOpen && video && (
-      <VideoPlayer
-        url={url}
-        formatId={playerFormatId}
-        title={video.title}
-        onClose={() => setPlayerOpen(false)}
-      />
-    )}
-    </>
   );
 }
 
@@ -450,6 +449,66 @@ function FormatCard({
           )}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function InlinePlayer({
+  url,
+  formatId,
+  onClose,
+}: {
+  url: string;
+  formatId?: string;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const streamUrl =
+    `${BASE}/api/youtube/stream?url=${encodeURIComponent(url)}` +
+    (formatId ? `&formatId=${encodeURIComponent(formatId)}` : "");
+
+  return (
+    <div className="w-full h-full relative bg-black">
+      {loading && !error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/50 z-10">
+          <Loader2 className="w-7 h-7 animate-spin" />
+          <span className="text-xs">Resolving stream…</span>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/50 z-10 p-4 text-center">
+          <span className="text-xs">Can't play this format in browser.</span>
+          <button onClick={onClose} className="text-xs underline text-white/40 hover:text-white/70">
+            Back to thumbnail
+          </button>
+        </div>
+      )}
+      {!error && (
+        <video
+          key={streamUrl}
+          src={streamUrl}
+          controls
+          autoPlay
+          className="w-full h-full object-contain"
+          onCanPlay={() => setLoading(false)}
+          onLoadedData={() => setLoading(false)}
+          onError={() => { setLoading(false); setError(true); }}
+        />
+      )}
+      {!error && (
+        <button
+          onClick={onClose}
+          className="absolute top-1.5 right-1.5 z-20 bg-black/60 hover:bg-black/90 text-white/70 hover:text-white rounded-full p-1 transition-colors"
+          title="Back to thumbnail"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
