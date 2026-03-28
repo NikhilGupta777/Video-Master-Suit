@@ -48,6 +48,18 @@ Every package extends `tsconfig.base.json` which sets `composite: true`. The roo
 - `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
 - `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
 
+## Applications
+
+### `artifacts/yt-downloader` (`@workspace/yt-downloader`)
+
+YouTube video downloader web app (React + Vite). Features:
+- Paste any YouTube URL to fetch video info (title, thumbnail, duration, uploader, views)
+- Shows all available quality options: 4K (2160p), 1440p, 1080p, 720p, 480p, 360p, 240p, 144p, and audio-only (MP3)
+- Best quality badge on top format
+- Real-time download progress (percent, speed, ETA) via polling
+- Uses `/api/youtube/*` backend routes
+- `previewPath: "/"`
+
 ## Packages
 
 ### `artifacts/api-server` (`@workspace/api-server`)
