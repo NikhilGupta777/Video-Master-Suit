@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music, Download, Loader2 } from "lucide-react";
+import {
+  Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
+  Download, Loader2, Scissors, Sparkles
+} from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
 
@@ -9,11 +12,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
+import { BestClips } from "@/components/BestClips";
+
+type Mode = "download" | "clips";
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [submittedUrl, setSubmittedUrl] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>("download");
   const { toast } = useToast();
 
   const getInfo = useGetVideoInfo({
@@ -51,7 +59,10 @@ export default function Home() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!url.trim()) return;
-    getInfo.mutate({ data: { url } });
+    setSubmittedUrl(url.trim());
+    if (mode === "download") {
+      getInfo.mutate({ data: { url } });
+    }
   };
 
   const handleDownload = (format: VideoFormat) => {
@@ -67,7 +78,6 @@ export default function Home() {
 
   const video = getInfo.data;
   
-  // Sort and group formats safely
   const videoFormats = video?.formats?.filter(f => f.hasVideo && f.hasAudio)?.sort((a, b) => {
     const resA = parseInt(a.resolution?.split('x')[1] || '0');
     const resB = parseInt(b.resolution?.split('x')[1] || '0');
@@ -78,6 +88,12 @@ export default function Home() {
   const audioFormats = video?.formats?.filter(f => !f.hasVideo && f.hasAudio)?.sort((a, b) => {
     return (b.filesize || 0) - (a.filesize || 0);
   }) || [];
+
+  const showVideoInfo = mode === "download" && video && !jobId;
+  const showClips = mode === "clips" && submittedUrl;
+
+  const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
+  const isSearchPending = getInfo.isPending;
 
   return (
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-4 sm:px-6">
@@ -90,22 +106,22 @@ export default function Home() {
           className="w-full h-full object-cover opacity-50 mix-blend-screen"
         />
         <div className="absolute inset-0 bg-background/80 backdrop-blur-[60px]" />
-        {/* Subtle top glow */}
         <div className="absolute top-[-20%] left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-primary/20 blur-[120px] rounded-full pointer-events-none" />
       </div>
 
       <main className="w-full max-w-5xl mx-auto flex flex-col items-center z-10 relative">
         
-        {/* Animated Container for Hero / Search */}
+        {/* Header + Search */}
         <motion.div 
           layout
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
           className={cn(
             "w-full flex flex-col items-center transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            video ? "pt-12 mb-12" : "pt-[25vh]"
+            (showVideoInfo || showClips) ? "pt-12 mb-8" : "pt-[25vh]"
           )}
         >
+          {/* Logo */}
           <motion.div layout className="flex items-center gap-3 mb-8">
             <div className="bg-primary/20 p-3 rounded-2xl border border-primary/30 shadow-[0_0_30px_rgba(229,9,20,0.3)]">
               <Youtube className="w-8 h-8 text-primary" />
@@ -115,12 +131,44 @@ export default function Home() {
             </h1>
           </motion.div>
 
-          {!video && (
+          {!showVideoInfo && !showClips && (
             <motion.p layout className="text-white/60 text-lg mb-8 text-center max-w-lg">
-              Download high-quality videos and audio instantly. Paste any YouTube link below to get started.
+              Download high-quality videos and audio, or let AI find the best clips from any YouTube video.
             </motion.p>
           )}
 
+          {/* Mode Tabs */}
+          <motion.div layout className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1 mb-6">
+            <button
+              onClick={() => setMode("download")}
+              className={cn(
+                "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                mode === "download"
+                  ? "bg-primary text-white shadow-[0_0_20px_rgba(229,9,20,0.3)]"
+                  : "text-white/50 hover:text-white/80"
+              )}
+            >
+              <Download className="w-4 h-4" />
+              Download
+            </button>
+            <button
+              onClick={() => setMode("clips")}
+              className={cn(
+                "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                mode === "clips"
+                  ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)]"
+                  : "text-white/50 hover:text-white/80"
+              )}
+            >
+              <Sparkles className="w-4 h-4" />
+              Best Clips
+              <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0 ml-0.5">
+                AI
+              </Badge>
+            </button>
+          </motion.div>
+
+          {/* Search Bar */}
           <motion.form 
             layout 
             onSubmit={handleSearch}
@@ -140,17 +188,21 @@ export default function Home() {
               <Button 
                 type="submit" 
                 size="lg"
-                disabled={getInfo.isPending || !url.trim()}
-                className="h-12 px-6 rounded-xl shrink-0"
+                disabled={isSearchPending || !url.trim()}
+                className={cn(
+                  "h-12 px-6 rounded-xl shrink-0",
+                  mode === "clips" && "bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 border-violet-500/30"
+                )}
               >
-                {getInfo.isPending ? (
+                {isSearchPending ? (
                   <span className="flex items-center gap-2">
                     <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
                     Fetching
                   </span>
                 ) : (
                   <span className="flex items-center gap-2">
-                    Start <ArrowRight className="w-5 h-5" />
+                    {mode === "clips" ? <Scissors className="w-4 h-4" /> : null}
+                    {buttonPlaceholder} <ArrowRight className="w-5 h-5" />
                   </span>
                 )}
               </Button>
@@ -158,126 +210,164 @@ export default function Home() {
           </motion.form>
         </motion.div>
 
-        {/* Video Results Area */}
-        <AnimatePresence mode="wait">
-          {video && !jobId && (
-            <motion.div 
-              initial={{ opacity: 0, y: 40 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.5, delay: 0.1 }}
-              className="w-full flex flex-col gap-8"
-            >
-              {/* Video Info Card */}
-              <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
-                
-                <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors">
-                  <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
-                    <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 group-hover:text-white group-hover:scale-110 transition-all shadow-lg">
-                      <Play className="w-8 h-8 ml-1" />
-                    </div>
-                  </div>
-                  <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {formatDuration(video.duration)}
-                  </div>
-                </div>
-
-                <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
-                  <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
-                    {video.title}
-                  </h2>
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-white/70">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 flex items-center justify-center font-bold text-xs text-white uppercase shadow-inner">
-                        {video.uploader?.charAt(0) || 'Y'}
+        {/* Content area */}
+        <div className="w-full">
+          
+          {/* ── Download Mode ── */}
+          <AnimatePresence mode="wait">
+            {showVideoInfo && (
+              <motion.div 
+                key="download-results"
+                initial={{ opacity: 0, y: 40 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.5, delay: 0.1 }}
+                className="flex flex-col gap-8"
+              >
+                {/* Video Info Card */}
+                <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
+                  
+                  <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors">
+                    <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                      <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 group-hover:text-white group-hover:scale-110 transition-all shadow-lg">
+                        <Play className="w-8 h-8 ml-1" />
                       </div>
-                      <span className="font-medium text-white/90">{video.uploader}</span>
                     </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <Eye className="w-4 h-4 text-white/40" />
-                      {formatViews(video.viewCount)}
+                    <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {formatDuration(video.duration)}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
+                    <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
+                      {video.title}
+                    </h2>
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-white/70">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 flex items-center justify-center font-bold text-xs text-white uppercase shadow-inner">
+                          {video.uploader?.charAt(0) || 'Y'}
+                        </div>
+                        <span className="font-medium text-white/90">{video.uploader}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        <Eye className="w-4 h-4 text-white/40" />
+                        {formatViews(video.viewCount)}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Formats Grid */}
-              <div className="space-y-8">
-                
-                {/* Video Options */}
-                {videoFormats.length > 0 && (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3 px-2">
-                      <Film className="w-5 h-5 text-primary" />
-                      <h3 className="text-xl font-display font-semibold text-white">Video Options</h3>
-                      <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
+                {/* Formats Grid */}
+                <div className="space-y-8">
+                  {videoFormats.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3 px-2">
+                        <Film className="w-5 h-5 text-primary" />
+                        <h3 className="text-xl font-display font-semibold text-white">Video Options</h3>
+                        <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {videoFormats.map((format, idx) => (
+                          <FormatCard 
+                            key={format.formatId} 
+                            format={format} 
+                            isBest={idx === 0} 
+                            onDownload={handleDownload}
+                            isPending={activeFormatId === format.formatId && download.isPending}
+                            isDisabled={download.isPending}
+                          />
+                        ))}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {videoFormats.map((format, idx) => (
-                        <FormatCard 
-                          key={format.formatId} 
-                          format={format} 
-                          isBest={idx === 0} 
-                          onDownload={handleDownload}
-                          isPending={activeFormatId === format.formatId && download.isPending}
-                          isDisabled={download.isPending}
-                        />
+                  )}
+
+                  {audioFormats.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3 px-2">
+                        <Music className="w-5 h-5 text-purple-400" />
+                        <h3 className="text-xl font-display font-semibold text-white">Audio Only</h3>
+                        <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {audioFormats.slice(0, 6).map((format, idx) => (
+                          <FormatCard 
+                            key={format.formatId} 
+                            format={format} 
+                            isBest={idx === 0} 
+                            onDownload={handleDownload}
+                            isPending={activeFormatId === format.formatId && download.isPending}
+                            isDisabled={download.isPending}
+                            audioOnly
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Download Progress */}
+          <AnimatePresence>
+            {jobId && mode === "download" && (
+              <ActiveDownload 
+                jobId={jobId} 
+                onReset={() => {
+                  setJobId(null);
+                  setActiveFormatId(null);
+                }} 
+              />
+            )}
+          </AnimatePresence>
+
+          {/* ── Best Clips Mode ── */}
+          <AnimatePresence mode="wait">
+            {mode === "clips" && (
+              <motion.div
+                key="clips-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+              >
+                {showClips ? (
+                  <BestClips url={submittedUrl} />
+                ) : (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="glass-panel rounded-3xl p-10 flex flex-col items-center gap-5 text-center"
+                  >
+                    <div className="bg-violet-500/20 p-5 rounded-3xl border border-violet-500/30">
+                      <Sparkles className="w-10 h-10 text-violet-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-display font-bold text-white mb-2">Find the Best Clips</h3>
+                      <p className="text-white/50 max-w-md">
+                        Paste a YouTube URL above and click Analyze — our AI will study the transcript and identify the most engaging segments at 1, 3, 5, and 10 minute lengths.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-3 text-sm text-white/40">
+                      {["1 min highlight", "3 min summary", "5 min deep-dive", "10 min feature"].map(t => (
+                        <span key={t} className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-full">{t}</span>
                       ))}
                     </div>
-                  </div>
+                  </motion.div>
                 )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-                {/* Audio Options */}
-                {audioFormats.length > 0 && (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3 px-2">
-                      <Music className="w-5 h-5 text-purple-400" />
-                      <h3 className="text-xl font-display font-semibold text-white">Audio Only</h3>
-                      <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {audioFormats.slice(0, 6).map((format, idx) => (
-                        <FormatCard 
-                          key={format.formatId} 
-                          format={format} 
-                          isBest={idx === 0} 
-                          onDownload={handleDownload}
-                          isPending={activeFormatId === format.formatId && download.isPending}
-                          isDisabled={download.isPending}
-                          audioOnly
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Active Download Progress */}
-        <AnimatePresence>
-          {jobId && (
-            <ActiveDownload 
-              jobId={jobId} 
-              onReset={() => {
-                setJobId(null);
-                setActiveFormatId(null);
-              }} 
-            />
-          )}
-        </AnimatePresence>
-
+        </div>
       </main>
     </div>
   );
 }
 
-// Sub-component for individual format cards
 function FormatCard({ 
   format, 
   isBest, 
@@ -295,7 +385,6 @@ function FormatCard({
 }) {
   return (
     <div className="group relative glass-panel hover:bg-white/10 border-white/5 hover:border-primary/40 transition-all duration-300 rounded-2xl p-5 overflow-hidden flex flex-col justify-between">
-      {/* Hover gradient sweep */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
       
       <div className="relative z-10 flex justify-between items-start mb-4">

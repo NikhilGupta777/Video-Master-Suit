@@ -1,9 +1,10 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream } from "fs";
+import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+import OpenAI from "openai";
 
 const router: IRouter = Router();
 
@@ -450,6 +451,346 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
     try { unlinkSync(job.filePath!); } catch {}
     jobs.delete(jobId);
   });
+});
+
+// ─── Best Clips Feature ────────────────────────────────────────────────────
+
+const openai = new OpenAI({
+  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "dummy",
+});
+
+interface VttCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+function vttTimeToSec(t: string): number {
+  const parts = t.split(":");
+  if (parts.length === 3) {
+    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  }
+  return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+}
+
+function parseVtt(content: string): VttCue[] {
+  const cues: VttCue[] = [];
+  const blocks = content.split(/\n\n+/);
+  for (const block of blocks) {
+    const lines = block.trim().split("\n");
+    const timeLine = lines.find(l => l.includes("-->"));
+    if (!timeLine) continue;
+    const [startStr, endStr] = timeLine.split("-->").map(s => s.trim().split(" ")[0]);
+    const text = lines
+      .filter(l => !l.includes("-->") && !l.match(/^\d+$/) && l.trim())
+      .map(l => l.replace(/<[^>]+>/g, "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (text) {
+      cues.push({ startSec: vttTimeToSec(startStr), endSec: vttTimeToSec(endStr), text });
+    }
+  }
+  return cues;
+}
+
+function cuesToText(cues: VttCue[]): string {
+  return cues
+    .map(c => {
+      const mm = Math.floor(c.startSec / 60);
+      const ss = Math.floor(c.startSec % 60);
+      return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${c.text}`;
+    })
+    .join("\n");
+}
+
+function formatTime(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export interface BestClip {
+  durationLabel: string;
+  durationSec: number;
+  startSec: number;
+  endSec: number;
+  startFormatted: string;
+  endFormatted: string;
+  title: string;
+  description: string;
+  reason: string;
+}
+
+router.post("/youtube/clips", async (req: Request, res: Response) => {
+  const { url, durations } = req.body as { url: string; durations?: number[] };
+
+  if (!url) {
+    res.status(400).json({ error: "URL is required" });
+    return;
+  }
+
+  const clipDurations: number[] = (durations && durations.length > 0)
+    ? durations
+    : [60, 180, 300, 600];
+
+  const tmpId = randomUUID();
+  const subBase = join(DOWNLOAD_DIR, `subs_${tmpId}`);
+
+  try {
+    // 1. Get video metadata and subtitles
+    req.log.info({ url }, "Fetching subtitles for clips analysis");
+
+    let transcript = "";
+    let videoDuration = 0;
+    let videoTitle = "";
+    let videoDescription = "";
+
+    // Get metadata first
+    try {
+      const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+      const meta = JSON.parse(metaJson);
+      videoDuration = meta.duration ?? 0;
+      videoTitle = meta.title ?? "";
+      videoDescription = (meta.description ?? "").slice(0, 1000);
+
+      // Extract chapters if available
+      if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
+        transcript = meta.chapters
+          .map((c: any) => `[${formatTime(c.start_time)}] Chapter: ${c.title}`)
+          .join("\n");
+      }
+    } catch (e) {
+      req.log.warn({ e }, "Failed to fetch video metadata");
+    }
+
+    // Try to get subtitles
+    if (!transcript) {
+      try {
+        const subArgs = [
+          "--write-subs", "--write-auto-subs",
+          "--sub-lang", "en",
+          "--sub-format", "vtt",
+          "--skip-download",
+          "--no-warnings",
+          "--no-playlist",
+          "-o", subBase + ".%(ext)s",
+          url,
+        ];
+        await runYtDlp(subArgs);
+        // Find the vtt file
+        const vttFile = [`${subBase}.en.vtt`, `${subBase}.en-orig.vtt`].find(f => existsSync(f));
+        if (vttFile) {
+          const content = readFileSync(vttFile, "utf8");
+          const cues = parseVtt(content);
+          transcript = cuesToText(cues);
+          try { unlinkSync(vttFile); } catch {}
+        }
+      } catch (e) {
+        req.log.warn({ e }, "Failed to get subtitles, proceeding without transcript");
+      }
+    }
+
+    // 2. Build the context for the LLM
+    const hasTranscript = transcript.length > 50;
+    const validDurations = clipDurations.filter(d => !videoDuration || d < videoDuration);
+
+    const durationLabels: Record<number, string> = {
+      60: "1 minute", 180: "3 minutes", 300: "5 minutes", 600: "10 minutes",
+    };
+
+    const durationDescList = validDurations
+      .map(d => `- ${durationLabels[d] ?? `${d} seconds`} (${d}s)`)
+      .join("\n");
+
+    const systemPrompt = `You are a video content analyst. Your job is to identify the best, most engaging clip from a YouTube video for each requested duration. 
+    
+You analyze transcripts, chapters, and descriptions to find segments with the highest value — most interesting, informative, funny, or shareable moments.
+
+Always respond with ONLY a valid JSON array, no markdown, no explanation. Each element:
+{
+  "durationSec": <requested duration>,
+  "startSec": <start time in seconds>,
+  "endSec": <end time in seconds>,
+  "title": "<compelling short clip title>",
+  "description": "<2-3 sentence description of what happens in this clip and why it's engaging>",
+  "reason": "<one sentence on why this is the best clip for this duration>"
+}`;
+
+    const userContent = `Video: "${videoTitle}"
+Total Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"}
+${videoDescription ? `Description: ${videoDescription}\n` : ""}
+${hasTranscript ? `\nTranscript (with timestamps):\n${transcript.slice(0, 12000)}` : "\n[No transcript available — base analysis on title and description]"}
+
+Find the single best clip for each of these durations:
+${durationDescList}
+
+Important rules:
+- endSec = startSec + durationSec (exact)
+- startSec must be ≥ 0 and endSec must be ≤ ${videoDuration || 99999}
+- Different start times for each duration
+- For longer clips, pick sections with the most complete content arc`;
+
+    req.log.info({ validDurations, hasTranscript }, "Calling OpenAI for clip analysis");
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5-mini",
+      max_completion_tokens: 2048,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+    });
+
+    const raw = response.choices[0]?.message?.content?.trim() ?? "[]";
+    let parsed: any[];
+
+    try {
+      // Strip markdown code blocks if present
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      parsed = JSON.parse(cleaned);
+      if (!Array.isArray(parsed)) parsed = [parsed];
+    } catch (e) {
+      req.log.error({ raw, e }, "Failed to parse OpenAI response as JSON");
+      res.status(500).json({ error: "Failed to parse AI response", raw });
+      return;
+    }
+
+    const clips: BestClip[] = parsed
+      .filter((c: any) => typeof c.startSec === "number" && typeof c.durationSec === "number")
+      .map((c: any): BestClip => {
+        const durLabel = durationLabels[c.durationSec] ?? `${c.durationSec}s`;
+        const actualEnd = Math.round(c.startSec + c.durationSec);
+        return {
+          durationLabel: durLabel,
+          durationSec: c.durationSec,
+          startSec: Math.round(c.startSec),
+          endSec: actualEnd,
+          startFormatted: formatTime(Math.round(c.startSec)),
+          endFormatted: formatTime(actualEnd),
+          title: c.title ?? `Best ${durLabel} clip`,
+          description: c.description ?? "",
+          reason: c.reason ?? "",
+        };
+      })
+      .sort((a: BestClip, b: BestClip) => a.durationSec - b.durationSec);
+
+    res.json({ clips, hasTranscript, videoDuration });
+
+  } catch (err) {
+    req.log.error({ err }, "Failed to find best clips");
+    const message = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: "Failed to analyze video for clips", details: message });
+  }
+});
+
+// ─── Clip Download (specific time range) ─────────────────────────────────────
+
+router.post("/youtube/download-clip", async (req: Request, res: Response) => {
+  const { url, startSec, endSec, title } = req.body as {
+    url: string;
+    startSec: number;
+    endSec: number;
+    title?: string;
+  };
+
+  if (!url || startSec == null || endSec == null) {
+    res.status(400).json({ error: "url, startSec, and endSec are required" });
+    return;
+  }
+
+  const jobId = randomUUID();
+  const safeTitle = (title ?? "clip").replace(/[^\w\s\-_.()]/g, "_").slice(0, 60);
+  const job: DownloadJob = {
+    status: "pending",
+    percent: 0,
+    speed: null,
+    eta: null,
+    filename: `${safeTitle}.mp4`,
+    filesize: null,
+    message: "Starting clip download...",
+    filePath: null,
+    url,
+    formatId: "bestvideo+bestaudio/best",
+    audioOnly: false,
+    ext: "mp4",
+  };
+
+  jobs.set(jobId, job);
+  res.json({ jobId, status: "pending", message: "Clip download started" });
+
+  const start = formatTime(Math.round(startSec));
+  const end = formatTime(Math.round(endSec));
+  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
+  const jobRef = jobs.get(jobId)!;
+  jobRef.status = "downloading";
+
+  const args = [
+    "--no-playlist", "--no-warnings", "--newline", "--progress",
+    "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    "--merge-output-format", "mp4",
+    "--download-sections", `*${start}-${end}`,
+    "--force-keyframes-at-cuts",
+    "-o", outputPath,
+    url,
+  ];
+
+  new Promise<void>((resolve, reject) => {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    let stderr = "";
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      const lines = data.toString().split("\n");
+      for (const line of lines) {
+        const t = line.trim();
+        const progressMatch = t.match(/\[download\]\s+([\d.]+)%/);
+        if (progressMatch) {
+          jobRef.percent = Math.round(parseFloat(progressMatch[1]));
+        }
+        const destMatch = t.match(/\[(?:download|Merger)\] Destination:\s+(.+)/);
+        if (destMatch) {
+          jobRef.filePath = destMatch[1].trim();
+          jobRef.filename = destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
+        }
+        if (t.includes("[Merger]")) {
+          jobRef.status = "merging";
+          jobRef.message = "Merging clip...";
+        }
+      }
+    });
+    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code: number | null) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`));
+    });
+    proc.on("error", (err: Error) => reject(err));
+  })
+    .then(() => {
+      const ext = ["mp4", "mkv", "webm"].find(e => existsSync(join(DOWNLOAD_DIR, `${jobId}.${e}`)));
+      const finalPath = ext ? join(DOWNLOAD_DIR, `${jobId}.${ext}`) : (jobRef.filePath ?? null);
+      if (!finalPath || !existsSync(finalPath)) {
+        jobRef.status = "error";
+        jobRef.message = "Clip file not found after download";
+        return;
+      }
+      jobRef.filePath = finalPath;
+      jobRef.filename = `${safeTitle}.mp4`;
+      jobRef.filesize = statSync(finalPath).size;
+      jobRef.status = "done";
+      jobRef.percent = 100;
+      jobRef.speed = null;
+      jobRef.eta = null;
+      jobRef.message = null;
+    })
+    .catch((err) => {
+      req.log.error({ err, jobId }, "Clip download failed");
+      jobRef.status = "error";
+      jobRef.message = err instanceof Error ? err.message : "Download failed";
+    });
 });
 
 export default router;
