@@ -14,6 +14,7 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 
@@ -44,35 +45,49 @@ export interface TimelineSegment {
 }
 
 // ── Gemini image generation ───────────────────────────────────────────────────
+function getImageGenClient(): GoogleGenAI {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (baseUrl && apiKey) {
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: { apiVersion: "", baseUrl },
+    });
+  }
+  // Fallback to direct Gemini API key
+  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+}
+
 async function generateImage(
-  genAI: GoogleGenerativeAI,
+  _genAI: GoogleGenerativeAI,
   prompt: string,
   outputPath: string,
 ): Promise<void> {
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash-preview-image-generation",
-    // @ts-ignore
-    generationConfig: { responseModalities: ["IMAGE"] },
-  });
+  const imageAI = getImageGenClient();
 
   const fullPrompt = `${prompt}
 
 Style requirements: high-quality devotional digital painting, warm spiritual atmosphere, rich colors, no text, no watermarks, no borders, wide 16:9 aspect ratio suitable for video overlay.`;
 
-  const result = await model.generateContent(fullPrompt);
-  const candidate = result.response.candidates?.[0];
+  const response = await imageAI.models.generateContent({
+    model: "gemini-2.5-flash-image",
+    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+    config: { responseModalities: [Modality.TEXT, Modality.IMAGE] },
+  });
+
+  const candidate = response.candidates?.[0];
   if (!candidate) throw new Error("Gemini returned no candidate");
 
-  for (const part of candidate.content.parts) {
-    if ((part as any).inlineData?.data) {
-      writeFileSync(
-        outputPath,
-        Buffer.from((part as any).inlineData.data, "base64"),
-      );
-      return;
-    }
-  }
-  throw new Error("Gemini returned no image data");
+  const imagePart = candidate.content?.parts?.find(
+    (part: any) => part.inlineData?.data,
+  );
+  if (!imagePart?.inlineData?.data)
+    throw new Error("Gemini returned no image data");
+
+  writeFileSync(
+    outputPath,
+    Buffer.from(imagePart.inlineData.data, "base64"),
+  );
 }
 
 // Generate images for all segments — 2 per katha segment, 1 per bhajan segment
@@ -120,13 +135,17 @@ async function generateAllSegmentImages(
         try {
           await generateImage(genAI, task.prompt, task.path);
           imagePaths[task.segIdx].push(task.path);
-        } catch {
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[bhagwat/render] Image gen failed (seg ${task.segIdx}/${task.imgIdx}):`, errMsg);
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. Devotional Indian painting style.`;
           try {
             await generateImage(genAI, fallback, task.path);
             imagePaths[task.segIdx].push(task.path);
-          } catch {
+          } catch (err2) {
+            const errMsg2 = err2 instanceof Error ? err2.message : String(err2);
+            console.error(`[bhagwat/render] Fallback image gen also failed (seg ${task.segIdx}/${task.imgIdx}):`, errMsg2);
             // Skip this image slot — will use neighbor's image
           }
         }
