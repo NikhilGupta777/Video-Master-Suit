@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "YouTube Downloader"
+version = "1.0.0"
+id = "2df69066-daeb-41c3-bf65-6be857d30eea"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 5173
+
+[services.development]
+run = "pnpm --filter @workspace/yt-downloader run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/yt-downloader", "run", "build" ]
+publicDir = "artifacts/yt-downloader/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "5173"
+BASE_PATH = "/"
