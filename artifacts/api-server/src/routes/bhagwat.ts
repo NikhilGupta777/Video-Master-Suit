@@ -887,8 +887,9 @@ async function runBhagwatRender(
       message: `${totalGenerated} images generated. Building video sequence…`,
     });
 
-    // ── 3. Build ffmpeg concat list ───────────────────────────────────────────
-    const concatLines: string[] = [];
+    // ── 3. Build clip list (image path + duration per display slot) ───────────
+    interface Clip { imgPath: string; dur: number; }
+    const clips: Clip[] = [];
     const usedIndexPerSeg = new Array(timeline.length).fill(0);
 
     for (let i = 0; i < timeline.length; i++) {
@@ -901,62 +902,99 @@ async function runBhagwatRender(
       let elapsed = 0;
       while (elapsed < segDur - 0.1) {
         const dur = Math.min(seg.imageChangeEvery, segDur - elapsed);
-        const imgPath = pool[usedIndexPerSeg[i] % pool.length].replace(
-          /'/g,
-          "'\\''",
-        );
-        concatLines.push(`file '${imgPath}'`);
-        concatLines.push(`duration ${dur.toFixed(3)}`);
+        const imgPath = pool[usedIndexPerSeg[i] % pool.length];
+        clips.push({ imgPath, dur });
         usedIndexPerSeg[i]++;
         elapsed += dur;
       }
     }
 
-    if (concatLines.length === 0)
+    if (clips.length === 0)
       throw new Error("Could not build image sequence from generated images");
-
-    // FFmpeg concat quirk: last file must repeat without duration
-    const lastFile = [...concatLines]
-      .reverse()
-      .find((l) => l.startsWith("file"));
-    if (lastFile) concatLines.push(lastFile);
-    writeFileSync(concatPath, concatLines.join("\n"));
 
     emit("progress", { percent: 65, message: "Rendering video with FFmpeg…" });
 
-    // ── 4. FFmpeg render ──────────────────────────────────────────────────────
+    // ── 4. FFmpeg render with xfade crossfade transitions ─────────────────────
     const totalDuration = timeline.reduce(
       (s, seg) => s + (seg.endSec - seg.startSec),
       0,
     );
     job.filename = `bhagwat_${tmpId.slice(0, 6)}.mp4`;
 
+    // Clamp fade so it never exceeds 80% of the shortest clip
+    const FADE_DUR = Math.min(
+      0.7,
+      Math.min(...clips.map((c) => c.dur)) * 0.8,
+    );
+
+    const SCALE =
+      "scale=1920:1080:force_original_aspect_ratio=decrease," +
+      "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p";
+
+    // Build FFmpeg args and filter_complex
+    const ffArgs: string[] = [];
+
+    if (clips.length === 1) {
+      // Single clip — no xfade needed, simple path
+      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
+      ffArgs.push("-i", audioFile);
+      ffArgs.push(
+        "-vf", SCALE,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest", "-y", outputPath,
+      );
+    } else {
+      // Multiple clips — chain xfade between each consecutive pair
+      // Input 0: natural duration; inputs 1..N-1: duration + FADE_DUR (overlap padding)
+      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
+      for (let i = 1; i < clips.length; i++) {
+        ffArgs.push(
+          "-loop", "1",
+          "-t", (clips[i].dur + FADE_DUR).toFixed(3),
+          "-i", clips[i].imgPath,
+        );
+      }
+      ffArgs.push("-i", audioFile);
+
+      // Build filter_complex:
+      // 1. Scale each input: [0]scale...[v0]; [1]scale...[v1]; ...
+      // 2. Chain xfade:
+      //    [v0][v1]xfade=fade:dur:offset=(d0-F)[x1]
+      //    [x1][v2]xfade=fade:dur:offset=(d0+d1-F)[x2]
+      //    ...
+      //    [x{N-2}][v{N-1}]xfade=...[vout]
+      const filterParts: string[] = [];
+
+      for (let i = 0; i < clips.length; i++) {
+        filterParts.push(`[${i}]${SCALE}[v${i}]`);
+      }
+
+      let cumDur = 0;
+      let prevLabel = "v0";
+      for (let i = 1; i < clips.length; i++) {
+        cumDur += clips[i - 1].dur;
+        const offset = Math.max(0, cumDur - FADE_DUR);
+        const outLabel = i === clips.length - 1 ? "vout" : `x${i}`;
+        filterParts.push(
+          `[${prevLabel}][v${i}]xfade=transition=fade:duration=${FADE_DUR.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`,
+        );
+        prevLabel = outLabel;
+      }
+
+      const audioInputIdx = clips.length;
+      ffArgs.push(
+        "-filter_complex", filterParts.join(";"),
+        "-map", "[vout]",
+        "-map", `${audioInputIdx}:a`,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest", "-y", outputPath,
+      );
+    }
+
     await new Promise<void>((resolve, reject) => {
-      const ff = spawn("ffmpeg", [
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        concatPath,
-        "-i",
-        audioFile,
-        "-vf",
-        "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "22",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-shortest",
-        "-y",
-        outputPath,
-      ]);
+      const ff = spawn("ffmpeg", ffArgs);
       let stderr = "";
       ff.stderr.on("data", (d: Buffer) => {
         stderr += d.toString();
