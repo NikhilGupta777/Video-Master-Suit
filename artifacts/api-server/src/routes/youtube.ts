@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
@@ -12,6 +12,26 @@ const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 if (!existsSync(DOWNLOAD_DIR)) {
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
+
+// Clean up files older than 1 hour every 30 minutes
+const MAX_FILE_AGE_MS = 60 * 60 * 1000;
+function cleanupOldFiles() {
+  try {
+    const now = Date.now();
+    const files = readdirSync(DOWNLOAD_DIR);
+    for (const file of files) {
+      const filePath = join(DOWNLOAD_DIR, file);
+      try {
+        const stat = statSync(filePath);
+        if (now - stat.mtimeMs > MAX_FILE_AGE_MS) {
+          unlinkSync(filePath);
+        }
+      } catch {}
+    }
+  } catch {}
+}
+setInterval(cleanupOldFiles, 30 * 60 * 1000);
+cleanupOldFiles();
 
 interface VideoFormatOut {
   formatId: string;
