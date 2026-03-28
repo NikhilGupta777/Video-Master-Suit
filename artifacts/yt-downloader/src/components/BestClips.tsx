@@ -1,9 +1,9 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
-  AlertTriangle, Wand2
+  AlertTriangle, Wand2, Timer
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,7 @@ interface StepState {
   status: StepStatus;
   message: string;
   data?: Record<string, any>;
+  startedAt?: number;
 }
 
 type ClipKey = string;
@@ -40,6 +41,8 @@ interface DownloadState {
   status: "idle" | "downloading" | "done" | "error";
   percent: number;
   message?: string;
+  startedAt?: number;
+  elapsed?: number;
 }
 
 const STEPS = ["metadata", "transcript", "ai"] as const;
@@ -54,10 +57,17 @@ const STEP_META: Record<StepName, { label: string; icon: any }> = {
 interface Props { url: string; }
 
 function formatDuration(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "—";
   const s = Math.round(seconds);
   const m = Math.floor(s / 60);
   const rem = s % 60;
   return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+}
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
 }
 
 export function BestClips({ url }: Props) {
@@ -75,8 +85,31 @@ export function BestClips({ url }: Props) {
     transcript: { status: "idle", message: "" },
     ai:         { status: "idle", message: "" },
   });
+  const [analysisElapsed, setAnalysisElapsed] = useState(0);
+  const analysisStartRef = useRef<number | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const { toast } = useToast();
+
+  // Single always-running 1s ticker — updates analysis elapsed + all active download elapsed values
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (analysisStartRef.current !== null) {
+        setAnalysisElapsed(Math.floor((Date.now() - analysisStartRef.current) / 1000));
+      }
+      setDownloadStates(prev => {
+        let changed = false;
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (next[key].status === "downloading" && next[key].startedAt) {
+            next[key] = { ...next[key], elapsed: Math.floor((Date.now() - next[key].startedAt!) / 1000) };
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "");
 

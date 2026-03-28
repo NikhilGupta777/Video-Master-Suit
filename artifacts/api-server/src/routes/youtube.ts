@@ -271,11 +271,14 @@ function estimateFilesize(fmt: any, duration: number | null): number | null {
   if (fmt.filesize) return fmt.filesize;
   if (fmt.filesize_approx) return fmt.filesize_approx;
   // Estimate from total bitrate × duration: tbr is in kbps
-  if (fmt.tbr && duration) return Math.round((fmt.tbr * 1000 / 8) * duration);
+  if (fmt.tbr && duration) return Math.round(((fmt.tbr * 1000) / 8) * duration);
   return null;
 }
 
-function buildFormats(ytFormats: any[], duration?: number | null): VideoFormatOut[] {
+function buildFormats(
+  ytFormats: any[],
+  duration?: number | null,
+): VideoFormatOut[] {
   const qualityOrder: Record<number, number> = {
     2160: 10,
     1440: 9,
@@ -445,10 +448,18 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
       const prewarmFormat = bestCombined.formatId;
       const cacheKey = `${url}::${prewarmFormat}`;
       if (!getCachedStreamUrl(cacheKey)) {
-        runYtDlp(["--get-url", "--no-playlist", "--no-warnings", "-f", prewarmFormat, url])
+        runYtDlp([
+          "--get-url",
+          "--no-playlist",
+          "--no-warnings",
+          "-f",
+          prewarmFormat,
+          url,
+        ])
           .then((rawUrls) => {
             const cdnUrl = rawUrls.trim().split("\n")[0].trim();
-            if (cdnUrl && cdnUrl.startsWith("http")) setCachedStreamUrl(cacheKey, cdnUrl);
+            if (cdnUrl && cdnUrl.startsWith("http"))
+              setCachedStreamUrl(cacheKey, cdnUrl);
           })
           .catch(() => {}); // silently ignore pre-warm failures
       }
@@ -713,7 +724,10 @@ function getCachedStreamUrl(key: string): string | null {
 }
 
 function setCachedStreamUrl(key: string, cdnUrl: string): void {
-  streamUrlCache.set(key, { cdnUrl, expiresAt: Date.now() + STREAM_CACHE_TTL_MS });
+  streamUrlCache.set(key, {
+    cdnUrl,
+    expiresAt: Date.now() + STREAM_CACHE_TTL_MS,
+  });
 }
 
 router.get("/youtube/stream", async (req: Request, res: Response) => {
@@ -803,7 +817,9 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
     req.log.error({ err }, "Failed to get stream URL");
     const message = err instanceof Error ? err.message : "Unknown error";
     if (!res.headersSent)
-      res.status(500).json({ error: "Failed to get stream URL", details: message });
+      res
+        .status(500)
+        .json({ error: "Failed to get stream URL", details: message });
   }
 });
 
@@ -1053,7 +1069,15 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
   res.json({ jobId });
 
   // Run analysis in background
-  runClipAnalysis(jobId, job, url, durations ?? [], req.log, auto ?? false, instructions ?? undefined).catch(() => {});
+  runClipAnalysis(
+    jobId,
+    job,
+    url,
+    durations ?? [],
+    req.log,
+    auto ?? false,
+    instructions ?? undefined,
+  ).catch(() => {});
 });
 
 // GET: SSE stream for a clip job
@@ -1317,17 +1341,21 @@ async function runClipAnalysis(
 
     // Proportional coverage guidance (shared by both modes)
     const videoHours = videoDuration ? videoDuration / 3600 : 0;
-    const videoDurationLabel = videoHours >= 1
-      ? `${Math.round(videoHours * 10) / 10}-hour`
-      : `${Math.round(videoDuration / 60)}-minute`;
-    const expectedMinClips1min = videoDuration ? Math.max(5, Math.round(videoDuration / 240)) : 10;
-    const coverageGuidance = videoDuration > 0
-      ? `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
+    const videoDurationLabel =
+      videoHours >= 1
+        ? `${Math.round(videoHours * 10) / 10}-hour`
+        : `${Math.round(videoDuration / 60)}-minute`;
+    const expectedMinClips1min = videoDuration
+      ? Math.max(5, Math.round(videoDuration / 240))
+      : 10;
+    const coverageGuidance =
+      videoDuration > 0
+        ? `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
 - Spread clips proportionally across the ENTIRE runtime — beginning, every middle section, and end
 - Do NOT cluster at the start — every 10-minute block of the ${videoDurationLabel} video deserves at least one clip
 - A ${videoDurationLabel} video should yield at least ${expectedMinClips1min} clips total across all durations
 - NEVER stop early — scan all the way to ${formatTime(videoDuration)}`
-      : "";
+        : "";
 
     let systemPrompt: string;
     let userContent: string;
@@ -1348,7 +1376,7 @@ HOW TO PICK startSec AND endSec — THIS IS THE MOST IMPORTANT PART:
       // ── AUTO MODE: AI freely picks durations for every clip ───────────────
       systemPrompt = `You are a world-class video editor and content analyst. You are fluent in English and Hindi.
 
-Your task: Watch the ENTIRE video and extract EVERY segment worth clipping. You have COMPLETE creative freedom — pick any startSec and endSec that makes the clip feel perfectly complete from beginning to end. There are no duration presets. Each clip's length emerges entirely from where the content naturally starts and ends.
+Your task: Watch the ENTIRE video and extract EVERY segment worth clipping. You have COMPLETE creative freedom — pick any startSec and endSec that makes the clip feel perfectly complete from beginning to end. There are no duration presets. Each clip's length emerges entirely from where the content naturally starts and ends naturally.
 ${coverageGuidance}
 ${cutPointRules}
 
@@ -1369,7 +1397,6 @@ ${videoDescription ? `Description: ${videoDescription}\n` : ""}${customInstructi
 ${transcriptBlock}
 
 Find EVERY worthwhile clip. For each one: read the transcript carefully, find where the idea begins, read forward until you reach the natural conclusion of that idea — that is your endSec. No duration constraints, no clip count limit. Cover the full ${videoDuration ? formatTime(videoDuration) : "video"}.`;
-
     } else {
       // ── MANUAL MODE: fixed duration categories chosen by user ─────────────
       const durationDescList = validDurations
@@ -1378,13 +1405,13 @@ Find EVERY worthwhile clip. For each one: read the transcript carefully, find wh
             return `- CATEGORY ">5 min" (targetDuration=9999): find clips longer than 5 minutes. You decide each clip's exact length — 6 min, 10 min, 20 min, whatever the content demands. No upper cap.`;
           }
           const label = durationLabels[d] ?? `${Math.round(d / 60)} minutes`;
-          return `- CATEGORY "${label}" (targetDuration=${d}s): find clips roughly around ${label} long. The target is a loose guide — the actual clip must end at a natural speech/scene boundary even if that makes it noticeably shorter or longer than ${label}.`;
+          return `- CATEGORY "${label}" (targetDuration=${d}s): find clips roughly around ${label} long. The target is a loose guide — the actual clip must end at a natural speech/scene boundary even if that makes it noticeably shorter or longer (even if 1-2 mins more needed to clip perfectly when needed) than ${label}.`;
         })
         .join("\n");
 
       systemPrompt = `You are a world-class video editor and content analyst. You are fluent in English and Hindi.
 
-Your task: Scan the ENTIRE video timeline from 0s to ${videoDuration || 99999}s and identify EVERY genuinely engaging segment for each requested duration category. There is NO upper limit on clip count — return every worthwhile segment you find.
+Your task: Scan the ENTIRE video timeline from 0s to ${videoDuration || 99999}s and identify EVERY genuinely engaging segment for each requested duration category. There is NO upper limit on clip count — return every segment you find.
 ${coverageGuidance}
 ${cutPointRules}
 
@@ -1419,7 +1446,10 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
     // Robust parsing — handles markdown fences, surrounding text, type coercion
     const parsed = extractJsonArray(raw);
     if (!parsed) {
-      log.error({ raw: raw.slice(0, 500) }, "Failed to parse Gemini response as JSON");
+      log.error(
+        { raw: raw.slice(0, 500) },
+        "Failed to parse Gemini response as JSON",
+      );
       job.status = "error";
       job.error = "Failed to parse AI response — please try again";
       emit("error", { message: job.error });
@@ -1441,17 +1471,23 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
         const targetDur: number = Math.round(
           parseFloat(c.targetDuration ?? c.durationSec ?? c.duration),
         );
-        const startSec = Math.max(0, Math.round(parseFloat(c.startSec)));
+        // Cap startSec so it can never exceed videoDuration (avoids endSec < startSec after capping)
+        const maxStart = videoDuration ? Math.max(0, videoDuration - 2) : 99997;
+        const startSec = Math.max(0, Math.min(maxStart, Math.round(parseFloat(c.startSec))));
         const endSec = Math.min(
           videoDuration || 99999,
-          Math.max(startSec + 1, Math.round(parseFloat(c.endSec) ?? startSec + targetDur)),
+          Math.max(
+            startSec + 1,
+            Math.round(parseFloat(c.endSec) ?? startSec + targetDur),
+          ),
         );
         const actualMins = Math.round((endSec - startSec) / 60);
         // For the open-ended >5 min category, use a friendly label with actual length
         const durationLabel =
           targetDur === 9999
             ? `> 5 min (${actualMins}m)`
-            : (durationLabels[targetDur] ?? `~${Math.round(targetDur / 60)} min`);
+            : (durationLabels[targetDur] ??
+              `~${Math.round(targetDur / 60)} min`);
         return {
           durationLabel,
           durationSec: targetDur,
@@ -1466,6 +1502,8 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
           reason: c.reason ?? "",
         };
       })
+      // Safety: drop any clip where capping produced endSec <= startSec
+      .filter((clip) => clip.endSec > clip.startSec)
       .sort((a, b) =>
         a.durationSec !== b.durationSec
           ? a.durationSec - b.durationSec
