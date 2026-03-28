@@ -877,7 +877,7 @@ Respond with ONLY a valid JSON array (no markdown, no extra text):
     const userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 14000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
+${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 80000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
 
 Find every worthwhile clip for these durations:
 ${durationDescList}
