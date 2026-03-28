@@ -12,27 +12,10 @@ import { BestClips } from "@/components/BestClips";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface TimelineSegment {
-  startSec: number; endSec: number; category: string;
-  isBhajan: boolean; imageChangeEvery: number; description: string;
+  startSec: number; endSec: number;
+  isBhajan: boolean; imageChangeEvery: number;
+  description: string; imagePrompt: string;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  krishna:       "text-blue-300 border-blue-500/40 bg-blue-500/10",
-  radha_krishna: "text-pink-300 border-pink-500/40 bg-pink-500/10",
-  ram:           "text-green-300 border-green-500/40 bg-green-500/10",
-  sita_ram:      "text-emerald-300 border-emerald-500/40 bg-emerald-500/10",
-  hanuman:       "text-orange-300 border-orange-500/40 bg-orange-500/10",
-  bhagwat:       "text-yellow-300 border-yellow-500/40 bg-yellow-500/10",
-  bhajan:        "text-violet-300 border-violet-500/40 bg-violet-500/10",
-  general:       "text-white/50 border-white/20 bg-white/5",
-};
-
-const CATEGORY_LABELS: Record<string, string> = {
-  krishna: "Lord Krishna", radha_krishna: "Radha Krishna",
-  ram: "Lord Ram", sita_ram: "Sita Ram",
-  hanuman: "Lord Hanuman", bhagwat: "Bhagwat / Scripture",
-  bhajan: "Bhajan / Aarti", general: "General Devotional",
-};
 
 function formatSec(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
@@ -105,52 +88,62 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 // ── Timeline Preview ──────────────────────────────────────────────────────────
 function TimelinePreview({ timeline }: { timeline: TimelineSegment[] }) {
   const totalDur = timeline.reduce((s, seg) => s + (seg.endSec - seg.startSec), 0);
+  const bhajans = timeline.filter(s => s.isBhajan).length;
+  const kathas = timeline.length - bhajans;
 
   return (
     <div className="glass-panel rounded-2xl p-4 space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Film className="w-4 h-4 text-amber-400" />
-          AI Image Timeline
+          AI Editor Plan
         </h3>
-        <span className="text-white/40 text-xs">{timeline.length} segments · {formatSec(totalDur)}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-amber-300/70 text-xs">{kathas} katha scenes</span>
+          {bhajans > 0 && <span className="text-violet-300/70 text-xs">· {bhajans} bhajan sections</span>}
+          <span className="text-white/30 text-xs">· {formatSec(totalDur)}</span>
+        </div>
       </div>
 
-      {/* Visual timeline bar */}
-      <div className="flex h-5 rounded-lg overflow-hidden gap-px">
+      {/* Visual timeline bar — amber=katha, violet=bhajan */}
+      <div className="flex h-4 rounded-lg overflow-hidden gap-px">
         {timeline.map((seg, i) => {
           const pct = totalDur > 0 ? ((seg.endSec - seg.startSec) / totalDur) * 100 : 0;
-          const color = seg.isBhajan ? "bg-violet-500/70" :
-            seg.category === "krishna" ? "bg-blue-500/60" :
-            seg.category === "ram" || seg.category === "sita_ram" ? "bg-green-500/60" :
-            seg.category === "hanuman" ? "bg-orange-500/60" :
-            seg.category === "bhagwat" ? "bg-yellow-500/60" :
-            seg.category === "radha_krishna" ? "bg-pink-500/60" :
-            "bg-white/20";
           return (
             <div
               key={i}
               style={{ width: `${pct}%` }}
-              className={cn("h-full min-w-[2px] transition-all", color)}
-              title={`${formatSec(seg.startSec)} – ${formatSec(seg.endSec)} · ${CATEGORY_LABELS[seg.category] ?? seg.category}`}
+              className={cn(
+                "h-full min-w-[2px]",
+                seg.isBhajan ? "bg-violet-500/70" : "bg-amber-500/50"
+              )}
+              title={`${formatSec(seg.startSec)} – ${formatSec(seg.endSec)} · ${seg.description}`}
             />
           );
         })}
       </div>
 
       {/* Segment list */}
-      <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
         {timeline.map((seg, i) => (
-          <div key={i} className="flex items-start gap-3 text-sm">
-            <span className="text-white/30 tabular-nums text-xs mt-0.5 shrink-0 w-20">
-              {formatSec(seg.startSec)} – {formatSec(seg.endSec)}
-            </span>
-            <Badge className={cn("text-xs border shrink-0", CATEGORY_COLORS[seg.category])}>
-              {CATEGORY_LABELS[seg.category] ?? seg.category}
-              {seg.isBhajan && " ♪"}
-            </Badge>
-            <span className="text-white/50 text-xs leading-tight flex-1 truncate">{seg.description}</span>
-            <span className="text-white/25 text-xs shrink-0">↻{seg.imageChangeEvery}s</span>
+          <div key={i} className={cn(
+            "rounded-xl border p-2.5 space-y-1",
+            seg.isBhajan
+              ? "border-violet-500/20 bg-violet-500/5"
+              : "border-white/8 bg-white/3"
+          )}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-white/30 tabular-nums text-xs shrink-0">
+                {formatSec(seg.startSec)} – {formatSec(seg.endSec)}
+              </span>
+              {seg.isBhajan
+                ? <Badge className="text-xs border border-violet-500/40 bg-violet-500/10 text-violet-300">♪ Bhajan</Badge>
+                : <Badge className="text-xs border border-amber-500/30 bg-amber-500/8 text-amber-300/80">Katha</Badge>
+              }
+              <span className="text-white/25 text-xs ml-auto">↻{seg.imageChangeEvery}s</span>
+            </div>
+            <p className="text-white/70 text-xs font-medium leading-snug">{seg.description}</p>
+            <p className="text-white/30 text-xs leading-snug italic line-clamp-2">{seg.imagePrompt}</p>
           </div>
         ))}
       </div>
@@ -408,7 +401,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
             <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
               <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
               <p className="text-xs text-white/50 leading-relaxed">
-                Gemini will generate <span className="text-violet-300 font-medium">~{Math.min(30, Math.ceil(new Set(timeline.map(s => s.category + "_" + s.isBhajan)).size * 3))} devotional images</span> — specific to each katha, bhajan, and shloka section detected above — then render the full video.
+                Gemini will generate <span className="text-violet-300 font-medium">~{timeline.filter(s => !s.isBhajan).length * 2 + timeline.filter(s => s.isBhajan).length} devotional images</span> — a unique image crafted for each story beat and bhajan section above — then render the full video.
               </p>
             </div>
 
