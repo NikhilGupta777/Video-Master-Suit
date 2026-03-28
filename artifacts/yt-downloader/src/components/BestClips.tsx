@@ -439,8 +439,8 @@ export function BestClips({ url }: Props) {
                                 {clipIdx + 1}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 truncate">{clip.title}</h4>
-                                <div className="flex items-center gap-3 text-white/50 text-xs">
+                                <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 line-clamp-2">{clip.title}</h4>
+                                <div className="flex items-center gap-2 sm:gap-3 text-white/50 text-xs flex-wrap">
                                   <span className="flex items-center gap-1"><Play className="w-3 h-3" />{clip.startFormatted}</span>
                                   <span>→</span>
                                   <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{clip.endFormatted}</span>
@@ -492,7 +492,7 @@ export function BestClips({ url }: Props) {
                                   exit={{ opacity: 0, height: 0 }}
                                   className="overflow-hidden"
                                 >
-                                  <div className="pt-3 mt-3 border-t border-white/5 space-y-2 ml-9">
+                                  <div className="pt-3 mt-3 border-t border-white/5 space-y-2 ml-0 sm:ml-9">
                                     <p className="text-white/65 text-sm leading-relaxed">{clip.description}</p>
                                     {clip.reason && (
                                       <div className="flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">

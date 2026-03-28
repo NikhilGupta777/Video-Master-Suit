@@ -93,7 +93,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
         )}
       />
 
-      <div className="glass-panel rounded-3xl p-8 md:p-12 relative overflow-hidden flex flex-col items-center text-center">
+      <div className="glass-panel rounded-3xl p-6 sm:p-8 md:p-12 relative overflow-hidden flex flex-col items-center text-center">
 
         {/* Status Icon */}
         <div className="mb-6">
@@ -121,7 +121,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
         </div>
 
         {/* Status Text */}
-        <h3 className="text-3xl font-display font-bold text-white mb-2">
+        <h3 className="text-2xl sm:text-3xl font-display font-bold text-white mb-2">
           {status === "pending" && "Initializing..."}
           {status === "downloading" && "Downloading Video..."}
           {status === "merging" && "Processing & Merging..."}
@@ -130,7 +130,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
           {isError && "Processing Failed"}
         </h3>
 
-        <p className="text-white/60 mb-6 max-w-md truncate">
+        <p className="text-white/60 mb-6 max-w-md break-all text-sm sm:text-base">
           {isExpired
             ? "The 5-minute window has passed. Start a new download to get the file."
             : progress?.filename || "Preparing your file, please wait..."}
@@ -142,19 +142,19 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             className={cn(
-              "flex items-center gap-2 px-5 py-3 rounded-2xl border mb-6 transition-colors duration-500",
+              "flex items-center gap-2 px-4 py-3 rounded-2xl border mb-6 transition-colors duration-500 max-w-xs sm:max-w-none",
               countdownUrgent
                 ? "bg-orange-500/15 border-orange-500/40 text-orange-300"
                 : "bg-white/5 border-white/10 text-white/70"
             )}
           >
-            <Clock className={cn("w-5 h-5 shrink-0", countdownUrgent ? "text-orange-400 animate-pulse" : "text-white/40")} />
-            <span className="text-sm font-medium">
-              File will be deleted from our server in{" "}
-              <span className={cn("font-bold text-base tabular-nums", countdownUrgent ? "text-orange-300" : "text-white")}>
+            <Clock className={cn("w-4 h-4 sm:w-5 sm:h-5 shrink-0", countdownUrgent ? "text-orange-400 animate-pulse" : "text-white/40")} />
+            <span className="text-xs sm:text-sm font-medium">
+              Deletes in{" "}
+              <span className={cn("font-bold tabular-nums", countdownUrgent ? "text-orange-300" : "text-white")}>
                 {formatCountdown(secondsLeft)}
               </span>
-              {" "}— save it now
+              {" "}— save now
             </span>
           </motion.div>
         )}
@@ -202,7 +202,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
               size="lg"
               className="w-full sm:w-auto text-glow shadow-[0_0_30px_rgba(229,9,20,0.4)]"
             >
-              <a href={`/api/youtube/file/${jobId}`} download>
+              <a href={`${import.meta.env.BASE_URL}api/youtube/file/${jobId}`} download>
                 <Download className="w-5 h-5 mr-2" />
                 Save File to Device
               </a>

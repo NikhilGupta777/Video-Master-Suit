@@ -96,7 +96,7 @@ export default function Home() {
   const isSearchPending = getInfo.isPending;
 
   return (
-    <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-4 sm:px-6">
+    <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
       
       {/* Premium Background */}
       <div className="fixed inset-0 z-[-1]">
@@ -105,7 +105,7 @@ export default function Home() {
           alt="Dark premium abstract background" 
           className="w-full h-full object-cover opacity-50 mix-blend-screen"
         />
-        <div className="absolute inset-0 bg-background/80 backdrop-blur-[60px]" />
+        <div className="absolute inset-0 bg-background/80 backdrop-blur-[20px] sm:backdrop-blur-[60px]" />
         <div className="absolute top-[-20%] left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-primary/20 blur-[120px] rounded-full pointer-events-none" />
       </div>
 
@@ -122,7 +122,7 @@ export default function Home() {
           )}
         >
           {/* Logo */}
-          <motion.div layout className="flex items-center gap-3 mb-8">
+          <motion.div layout className="flex items-center gap-2 sm:gap-3 mb-5 sm:mb-8">
             <div className="bg-primary/20 p-3 rounded-2xl border border-primary/30 shadow-[0_0_30px_rgba(229,9,20,0.3)]">
               <Youtube className="w-8 h-8 text-primary" />
             </div>
@@ -138,31 +138,31 @@ export default function Home() {
           )}
 
           {/* Mode Tabs */}
-          <motion.div layout className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1 mb-6">
+          <motion.div layout className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1 mb-6 w-full max-w-xs sm:w-auto">
             <button
               onClick={() => setMode("download")}
               className={cn(
-                "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 mode === "download"
                   ? "bg-primary text-white shadow-[0_0_20px_rgba(229,9,20,0.3)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Download className="w-4 h-4" />
+              <Download className="w-4 h-4 shrink-0" />
               Download
             </button>
             <button
               onClick={() => setMode("clips")}
               className={cn(
-                "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 mode === "clips"
                   ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="w-4 h-4 shrink-0" />
               Best Clips
-              <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0 ml-0.5">
+              <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0">
                 AI
               </Badge>
             </button>
@@ -181,8 +181,8 @@ export default function Home() {
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-                className="bg-transparent flex-1 outline-none px-4 py-3 text-white placeholder:text-white/30 text-lg"
+                placeholder="Paste YouTube URL..."
+                className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-3 text-white placeholder:text-white/30 text-base sm:text-lg min-w-0"
                 autoFocus
               />
               <Button 
@@ -190,19 +190,19 @@ export default function Home() {
                 size="lg"
                 disabled={isSearchPending || !url.trim()}
                 className={cn(
-                  "h-12 px-6 rounded-xl shrink-0",
+                  "h-10 sm:h-12 px-4 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base",
                   mode === "clips" && "bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 border-violet-500/30"
                 )}
               >
                 {isSearchPending ? (
                   <span className="flex items-center gap-2">
                     <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
-                    Fetching
+                    <span className="hidden sm:inline">Fetching</span>
                   </span>
                 ) : (
-                  <span className="flex items-center gap-2">
+                  <span className="flex items-center gap-1.5 sm:gap-2">
                     {mode === "clips" ? <Scissors className="w-4 h-4" /> : null}
-                    {buttonPlaceholder} <ArrowRight className="w-5 h-5" />
+                    {buttonPlaceholder} <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </span>
                 )}
               </Button>
@@ -340,7 +340,7 @@ export default function Home() {
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="glass-panel rounded-3xl p-10 flex flex-col items-center gap-5 text-center"
+                    className="glass-panel rounded-3xl p-6 sm:p-10 flex flex-col items-center gap-4 sm:gap-5 text-center"
                   >
                     <div className="bg-violet-500/20 p-5 rounded-3xl border border-violet-500/30">
                       <Sparkles className="w-10 h-10 text-violet-400" />
