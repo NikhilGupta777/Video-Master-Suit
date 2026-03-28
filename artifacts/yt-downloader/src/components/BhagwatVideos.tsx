@@ -275,19 +275,6 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
   return (
     <div className="space-y-5">
 
-      {/* AI Banner */}
-      <div className="glass-panel rounded-2xl p-4 flex items-start gap-3 border border-amber-500/20 bg-amber-500/5">
-        <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-amber-300">Fully AI-powered</p>
-          <p className="text-xs text-white/50 mt-0.5 leading-relaxed">
-            Paste any Bhagwat Katha YouTube URL. AI reads the transcript, identifies every katha, bhajan, and shloka section, then generates beautiful devotional images using Gemini — Lord Krishna for Krishna leelas, Sita-Ram for Ram katha, serene bhajan visuals during kirtan, and more. No uploads needed.
-          </p>
-        </div>
-      </div>
-
       {/* URL + Mode */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">
         <h3 className="font-semibold text-white flex items-center gap-2">
