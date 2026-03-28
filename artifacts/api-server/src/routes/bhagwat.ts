@@ -143,8 +143,8 @@ async function generateAllSegmentImages(
   let done = 0;
   const total = tasks.length;
 
-  // Process with concurrency = 3
-  const CONCURRENCY = 3;
+  // Process with concurrency = 4
+  const CONCURRENCY = 4;
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
     const batch = tasks.slice(i, i + CONCURRENCY);
     await Promise.all(
