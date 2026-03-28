@@ -101,6 +101,12 @@ async function buildAll() {
       "puppeteer-core",
       "electron",
     ],
+    alias: {
+      "youtubei.js/dist/src/utils/Utils.js": path.resolve(
+        artifactDir,
+        "../../node_modules/.pnpm/youtubei.js@17.0.1/node_modules/youtubei.js/dist/src/utils/Utils.js"
+      ),
+    },
     sourcemap: "linked",
     plugins: [
       // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it

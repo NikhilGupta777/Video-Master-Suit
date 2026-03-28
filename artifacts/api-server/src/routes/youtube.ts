@@ -1,10 +1,19 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { Innertube } from "youtubei.js";
+import { Platform } from "youtubei.js/dist/src/utils/Utils.js";
+import vm from "vm";
 import { spawn } from "child_process";
 import { createWriteStream, existsSync, mkdirSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+
+Platform.load({
+  ...Platform.shim,
+  eval: (data: { output: string }, env: Record<string, unknown>) => {
+    return vm.runInNewContext(data.output, { ...env });
+  },
+});
 
 const router: IRouter = Router();
 
