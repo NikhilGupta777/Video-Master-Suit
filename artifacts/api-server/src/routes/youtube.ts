@@ -1314,11 +1314,21 @@ async function runClipAnalysis(
       );
     }
 
+    // Fix #3: fail fast if API key is missing
+    if (!process.env.GEMINI_API_KEY) {
+      job.status = "error";
+      job.error = "GEMINI_API_KEY is not configured on the server";
+      emit("error", { message: job.error });
+      return;
+    }
+
     const hasTranscript = transcript.length > 50;
-    const validDurations = clipDurations.filter((d) => {
-      if (d === 9999) return !videoDuration || videoDuration > 300; // keep >5min if video is long enough
+    const filtered = clipDurations.filter((d) => {
+      if (d === 9999) return !videoDuration || videoDuration > 300;
       return !videoDuration || d < videoDuration;
     });
+    // Fix #4: fall back to full list if every duration was filtered out
+    const validDurations = filtered.length > 0 ? filtered : clipDurations;
 
     // ── Step 3: AI analysis ───────────────────────────────────────────────
     step(
@@ -1348,9 +1358,13 @@ async function runClipAnalysis(
     const expectedMinClips1min = videoDuration
       ? Math.max(5, Math.round(videoDuration / 240))
       : 10;
+    // Fix #1: when a topic filter is active, the coverage mandate must NOT demand
+    // a minimum clip count — that would force the AI to add off-topic clips.
     const coverageGuidance =
       videoDuration > 0
-        ? `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
+        ? customInstructions
+          ? `\nCOVERAGE: Scan the ENTIRE ${videoDurationLabel} video (0s → ${formatTime(videoDuration)}) — do NOT stop early. Return EVERY matching segment you find throughout the full runtime, from start to end.`
+          : `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
 - Spread clips proportionally across the ENTIRE runtime — beginning, every middle section, and end
 - Do NOT cluster at the start — every 10-minute block of the ${videoDurationLabel} video deserves at least one clip
 - A ${videoDurationLabel} video should yield at least ${expectedMinClips1min} clips total across all durations
@@ -1420,12 +1434,12 @@ ${coverageGuidance}
 ${cutPointRules}
 
 Additional rules:
-1. Find ALL non-overlapping segments per category — zero artificial cap
-2. Segments of the same targetDuration must NOT overlap (across different targetDurations, overlap is fine)
-3. Spread clips across the ENTIRE runtime — don't cluster at the beginning
-4. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
-5. Understand the transcript in whatever language it is (Hindi, English, mixed)
-6. Write ALL output fields (title, description, reason) in English
+1. Find ALL non-overlapping segments per category — zero artificial cap${customInstructions ? `\n2. MANDATORY TOPIC FILTER: The user has strictly requested only: "${customInstructions}". You MUST ONLY return clips that directly and clearly match this. Skip any segment that does not match. Return [] if nothing matches.` : ""}
+${customInstructions ? "3." : "2."} Segments of the same targetDuration must NOT overlap (across different targetDurations, overlap is fine)
+${customInstructions ? "4." : "3."} Spread clips across the ENTIRE runtime — don't cluster at the beginning
+${customInstructions ? "5." : "4."} startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
+${customInstructions ? "6." : "5."} Understand the transcript in whatever language it is (Hindi, English, mixed)
+${customInstructions ? "7." : "6."} Write ALL output fields (title, description, reason) in English
 
 CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no explanation:
 [{"targetDuration": <integer category value from the list>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
