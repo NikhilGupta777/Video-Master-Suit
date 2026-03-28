@@ -46,6 +46,11 @@ export interface TimelineSegment {
 
 // ── Gemini image generation ───────────────────────────────────────────────────
 function getImageGenClient(): GoogleGenAI {
+  // Prefer direct API key — supports latest models like gemini-3.1-flash-image-preview
+  if (process.env.GEMINI_API_KEY) {
+    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  // Fallback to Replit AI integration
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   if (baseUrl && apiKey) {
@@ -54,8 +59,7 @@ function getImageGenClient(): GoogleGenAI {
       httpOptions: { apiVersion: "", baseUrl },
     });
   }
-  // Fallback to direct Gemini API key
-  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in secrets.");
 }
 
 async function generateImage(
@@ -65,14 +69,28 @@ async function generateImage(
 ): Promise<void> {
   const imageAI = getImageGenClient();
 
-  const fullPrompt = `${prompt}
+  const sanitizedPrompt = prompt.slice(0, 500);
+  const fullPrompt = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for Hindu devotional video content with a spiritual and reverential tone.
+The image should visually represent: ${sanitizedPrompt}
 
-Style requirements: high-quality devotional digital painting, warm spiritual atmosphere, rich colors, no text, no watermarks, no borders, wide 16:9 aspect ratio suitable for video overlay.`;
+CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
+- MUST be photorealistic - no abstract, digital, animated, or illustrated styles
+- Use realistic lighting, natural depth of field, strong composition, and emotionally appropriate atmosphere
+- Style: Professional, cinematic realism, documentary-grade, clean and context-aware
+- Must look authentic, timeless, and suitable for high-quality B-roll usage
+- Consistent with other images in the same video project
+No subtitles, logos, watermarks, UI elements`;
 
   const response = await imageAI.models.generateContent({
-    model: "gemini-2.5-flash-image",
+    model: "gemini-3.1-flash-image-preview",
     contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-    config: { responseModalities: [Modality.TEXT, Modality.IMAGE] },
+    config: {
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
+      imageConfig: {
+        aspectRatio: "16:9",
+        imageSize: "2K",
+      } as any,
+    },
   });
 
   const candidate = response.candidates?.[0];
