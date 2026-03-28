@@ -1363,8 +1363,8 @@ async function runClipAnalysis(
           ? `\nCOVERAGE: Scan the ENTIRE ${videoDurationLabel} video (0s → ${formatTime(videoDuration)}) — do NOT stop early. Return EVERY matching segment you find throughout the full runtime, from start to end.`
           : `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
 - Scan the ENTIRE runtime from 0s to ${formatTime(videoDuration)} — do NOT stop early or cluster clips at the beginning
-- Do NOT skip the middle or end sections — if great content exists there, include it
-- Only return clips from sections that genuinely have something worth watching — never force a clip from a dull or repetitive section just to fill coverage`
+- Do NOT skip any section of the video cover all topics worth watching never force a clip from a dull or repetitive section
+- Return EVERY segment you find throughout the full runtime, from start to end`
         : "";
 
     let systemPrompt: string;
@@ -1492,7 +1492,10 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
         );
         // Cap startSec so it can never exceed videoDuration (avoids endSec < startSec after capping)
         const maxStart = videoDuration ? Math.max(0, videoDuration - 2) : 99997;
-        const startSec = Math.max(0, Math.min(maxStart, Math.round(parseFloat(c.startSec))));
+        const startSec = Math.max(
+          0,
+          Math.min(maxStart, Math.round(parseFloat(c.startSec))),
+        );
         const endSec = Math.min(
           videoDuration || 99999,
           Math.max(
