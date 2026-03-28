@@ -107,7 +107,7 @@ No subtitles, logos, watermarks, UI elements`;
   writeFileSync(outputPath, Buffer.from(imagePart.inlineData.data, "base64"));
 }
 
-// Generate images for all segments — 2 per katha segment, 1 per bhajan segment
+// Generate images for all segments — 1 per segment
 async function generateAllSegmentImages(
   genAI: GoogleGenerativeAI,
   segments: TimelineSegment[],
@@ -125,9 +125,7 @@ async function generateAllSegmentImages(
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    // Bhajan: 1 image (held long, no variety needed)
-    // Katha:  2 images (cycles to give visual variety while telling same story moment)
-    const count = seg.isBhajan ? 1 : 2;
+    const count = 1;
     for (let j = 0; j < count; j++) {
       tasks.push({
         segIdx: i,

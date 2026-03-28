@@ -401,7 +401,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
             <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
               <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
               <p className="text-xs text-white/50 leading-relaxed">
-                Gemini will generate <span className="text-violet-300 font-medium">~{timeline.filter(s => !s.isBhajan).length * 2 + timeline.filter(s => s.isBhajan).length} devotional images</span> — a unique image crafted for each story beat and bhajan section above — then render the full video.
+                Gemini will generate <span className="text-violet-300 font-medium">~{timeline.length} devotional images</span> — a unique image crafted for each story beat and bhajan section above — then render the full video.
               </p>
             </div>
 
