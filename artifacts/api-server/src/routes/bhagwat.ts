@@ -1,10 +1,9 @@
 import { Router, type Request, type Response } from "express";
-import multer from "multer";
 import {
   existsSync, mkdirSync, writeFileSync, readFileSync,
   unlinkSync, readdirSync, rmdirSync,
 } from "fs";
-import { join, extname, basename } from "path";
+import { join, basename } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
@@ -22,11 +21,10 @@ const PYTHON_ENV = {
 };
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
-const BHAGWAT_IMGS_DIR = join(DOWNLOAD_DIR, "bhagwat_imgs");
 const BHAGWAT_RENDERED_DIR = join(DOWNLOAD_DIR, "bhagwat_rendered");
 const BHAGWAT_TMP_DIR = join(DOWNLOAD_DIR, "bhagwat_tmp");
 
-for (const d of [BHAGWAT_IMGS_DIR, BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR]) {
+for (const d of [BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR]) {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
@@ -42,88 +40,136 @@ export const BHAGWAT_CATEGORIES = [
   { id: "general",       label: "General Devotional" },
 ];
 
-export interface ImageMeta {
-  id: string;
-  name: string;
-  category: string;
-  ext: string;
+// ── AI Image Generation ───────────────────────────────────────────────────────
+function buildImagePrompt(category: string, description: string, isBhajan: boolean, index: number): string {
+  const variations = [
+    "serene golden divine atmosphere",
+    "rich vibrant devotional colors, lotus flowers nearby",
+    "celestial soft light, sacred temple setting",
+  ];
+  const variation = variations[index % variations.length];
+
+  const bases: Record<string, string> = {
+    krishna:
+      "Exquisitely detailed devotional digital painting of Lord Krishna with blue divine skin, peacock feather crown, holding a golden flute, wrapped in yellow pitambara silk, standing in Vrindavan, divine aura glowing",
+    radha_krishna:
+      "Radha and Krishna together in divine eternal love, golden celestial light, surrounded by lotus flowers and peacocks, traditional devotional Indian art style",
+    ram:
+      "Lord Ram in royal warrior attire, bow and arrow, divine golden crown, serene powerful expression, celestial blue sky background, devotional art",
+    sita_ram:
+      "Sita and Ram together as divine couple, Ram in royal attire with bow, Sita in golden saree, hands joined, lotus throne, devotional painting",
+    hanuman:
+      "Lord Hanuman in powerful reverent pose, saffron body, mace in hand, Ram's name on heart, devotional expression, mountain backdrop, divine energy",
+    bhagwat:
+      "Sacred Shrimad Bhagavatam scripture open on lotus, golden divine light rays, Sanskrit text glowing, spiritual atmosphere, devotional setting",
+    bhajan:
+      isBhajan
+        ? "Devotees in kirtan, hands raised in ecstasy, Lord Krishna's image glowing above, divine golden light, flowers raining from sky, devotional bliss"
+        : "Divine lotus flowers floating on sacred water, golden light, spiritual peace, devotional atmosphere",
+    general:
+      "Beautiful Hindu devotional art, divine golden light from the heavens, sacred atmosphere, rich warm spiritual colors, lotus motifs",
+  };
+
+  const base = bases[category] ?? bases["general"];
+  const context = description
+    ? `. The scene depicts: ${description}`
+    : "";
+
+  return `${base}${context}. Style: ${variation}. High quality, photorealistic devotional painting, no text, no watermarks, no borders. Aspect ratio 16:9, wide format suitable for video overlay.`;
 }
 
-function imagePath(meta: ImageMeta) { return join(BHAGWAT_IMGS_DIR, `${meta.id}${meta.ext}`); }
-function metaPath(id: string) { return join(BHAGWAT_IMGS_DIR, `${id}.json`); }
+async function generateImage(
+  genAI: GoogleGenerativeAI,
+  prompt: string,
+  outputPath: string
+): Promise<void> {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.0-flash-preview-image-generation",
+    // @ts-ignore – generationConfig supports responseModalities
+    generationConfig: { responseModalities: ["IMAGE"] },
+  });
 
-function loadImages(): ImageMeta[] {
-  if (!existsSync(BHAGWAT_IMGS_DIR)) return [];
-  const images: ImageMeta[] = [];
-  for (const f of readdirSync(BHAGWAT_IMGS_DIR)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const meta: ImageMeta = JSON.parse(readFileSync(join(BHAGWAT_IMGS_DIR, f), "utf8"));
-      if (existsSync(imagePath(meta))) images.push(meta);
-    } catch {}
-  }
-  return images;
-}
+  const result = await model.generateContent(prompt);
+  const candidate = result.response.candidates?.[0];
+  if (!candidate) throw new Error("Gemini returned no candidate");
 
-function pickImageForCategory(category: string, images: ImageMeta[], usedIndex: number): ImageMeta | null {
-  const matching = images.filter(i => i.category === category);
-  if (matching.length > 0) return matching[usedIndex % matching.length];
-  if (images.length > 0) return images[usedIndex % images.length];
-  return null;
-}
-
-// ── Multer upload ─────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, BHAGWAT_IMGS_DIR),
-  filename: (_req, file, cb) => {
-    const ext = extname(file.originalname).toLowerCase() || ".jpg";
-    cb(null, `${randomUUID()}${ext}`);
-  },
-});
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (!file.mimetype.startsWith("image/")) {
-      cb(new Error("Only image files are allowed"));
+  for (const part of candidate.content.parts) {
+    if ((part as any).inlineData?.data) {
+      const imageData = (part as any).inlineData.data as string;
+      const imageBuffer = Buffer.from(imageData, "base64");
+      writeFileSync(outputPath, imageBuffer);
       return;
     }
-    cb(null, true);
-  },
-});
+  }
+  throw new Error("Gemini returned no image data in response");
+}
 
-// ── Image routes ──────────────────────────────────────────────────────────────
-router.post("/bhagwat/upload-image", upload.single("image"), (req: Request, res: Response): void => {
-  if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
-  const category = (req.body.category as string) || "general";
-  const ext = extname(req.file.filename);
-  const id = basename(req.file.filename, ext);
-  const meta: ImageMeta = { id, name: req.file.originalname, category, ext };
-  writeFileSync(metaPath(id), JSON.stringify(meta));
-  res.json({ ok: true, image: meta });
-});
+// Generate a pool of images for a category, with concurrency limit
+async function generateImagePool(
+  genAI: GoogleGenerativeAI,
+  segments: TimelineSegment[],
+  tmpBase: string,
+  onProgress: (msg: string) => void
+): Promise<Map<string, string[]>> {
+  // Group segments by category — collect up to 3 unique descriptions per category
+  const categoryGroups = new Map<string, { category: string; isBhajan: boolean; descriptions: string[] }>();
 
-router.get("/bhagwat/images", (_req: Request, res: Response) => {
-  res.json({ images: loadImages(), categories: BHAGWAT_CATEGORIES });
-});
+  for (const seg of segments) {
+    const key = `${seg.category}_${seg.isBhajan ? "bhajan" : "katha"}`;
+    if (!categoryGroups.has(key)) {
+      categoryGroups.set(key, { category: seg.category, isBhajan: seg.isBhajan, descriptions: [] });
+    }
+    const group = categoryGroups.get(key)!;
+    const desc = seg.description?.trim();
+    if (desc && !group.descriptions.includes(desc) && group.descriptions.length < 3) {
+      group.descriptions.push(desc);
+    }
+    // Ensure at least 3 images per group
+    while (group.descriptions.length < 3) {
+      group.descriptions.push("");
+    }
+  }
 
-router.delete("/bhagwat/image/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
-  const images = loadImages();
-  const img = images.find(i => i.id === id);
-  if (!img) { res.status(404).json({ error: "Not found" }); return; }
-  try { unlinkSync(imagePath(img)); } catch {}
-  try { unlinkSync(metaPath(id)); } catch {}
-  res.json({ ok: true });
-});
+  const imageMap = new Map<string, string[]>();
+  const tasks: Array<{ key: string; idx: number; prompt: string; path: string }> = [];
 
-router.get("/bhagwat/image-file/:filename", (req: Request, res: Response) => {
-  const fp = join(BHAGWAT_IMGS_DIR, req.params.filename);
-  if (!existsSync(fp)) { res.status(404).json({ error: "Not found" }); return; }
-  res.sendFile(fp);
-});
+  for (const [key, group] of categoryGroups) {
+    const paths: string[] = [];
+    for (let i = 0; i < group.descriptions.length; i++) {
+      const imgPath = join(tmpBase, `${key}_${i}.png`);
+      const prompt = buildImagePrompt(group.category, group.descriptions[i], group.isBhajan, i);
+      tasks.push({ key, idx: i, prompt, path: imgPath });
+      paths.push(imgPath);
+    }
+    imageMap.set(key, paths);
+  }
 
-// ── Shared utilities (mirrors of youtube.ts helpers) ──────────────────────────
+  // Generate with concurrency limit of 3
+  const CONCURRENCY = 3;
+  let completed = 0;
+  const total = tasks.length;
+
+  for (let i = 0; i < tasks.length; i += CONCURRENCY) {
+    const batch = tasks.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (task) => {
+        try {
+          onProgress(`Generating image ${completed + 1}/${total}: ${task.key.replace("_", " — ")}…`);
+          await generateImage(genAI, task.prompt, task.path);
+        } catch (e) {
+          // If generation fails, fall back to a simpler prompt
+          const fallbackPrompt = `Beautiful devotional Hindu art, ${task.key.replace("_bhajan", " bhajan").replace("_katha", " katha")}, golden light, spiritual atmosphere. Wide 16:9 format.`;
+          await generateImage(genAI, fallbackPrompt, task.path).catch(() => {});
+        }
+        completed++;
+      })
+    );
+  }
+
+  return imageMap;
+}
+
+// ── Shared utilities ───────────────────────────────────────────────────────────
 function runYtDlp(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "", err = "";
@@ -218,7 +264,7 @@ function pickBestSubtitleUrl(
   return null;
 }
 
-// ── Analysis types / job store ────────────────────────────────────────────────
+// ── Timeline types ────────────────────────────────────────────────────────────
 export interface TimelineSegment {
   startSec: number;
   endSec: number;
@@ -228,6 +274,7 @@ export interface TimelineSegment {
   description: string;
 }
 
+// ── Analysis job store ────────────────────────────────────────────────────────
 interface AnalysisJob {
   emitter: EventEmitter;
   status: "pending" | "running" | "done" | "error";
@@ -264,7 +311,7 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
   req.on("close", () => job.emitter.removeAllListeners());
 });
 
-// ── Render types / job store ──────────────────────────────────────────────────
+// ── Render job store ──────────────────────────────────────────────────────────
 interface RenderJob {
   emitter: EventEmitter;
   status: "pending" | "running" | "done" | "error";
@@ -397,12 +444,6 @@ async function runBhagwatAnalysis(
       ? "AI is mapping the full video to devotional images…"
       : "AI is identifying the best moments for image placement…");
 
-    const images = loadImages();
-    const categoryCounts = BHAGWAT_CATEGORIES.map(c => {
-      const count = images.filter(i => i.category === c.id).length;
-      return `- ${c.label} (id: "${c.id}"): ${count} image${count !== 1 ? "s" : ""} uploaded`;
-    }).join("\n");
-
     const transcriptForAI = transcript.length > 50
       ? sampleTranscript(transcript, 400000)
       : "";
@@ -417,49 +458,56 @@ async function runBhagwatAnalysis(
 
 Your task: Analyze the transcript and create an image placement timeline for this devotional video.
 
-AVAILABLE IMAGE CATEGORIES (use ONLY these exact category ids):
-${categoryCounts}
+AVAILABLE CATEGORY IDs (use ONLY these exact values):
+- "krishna"       → Lord Krishna narration, Bhagavatam stories, Govinda leelas
+- "radha_krishna" → Radha Krishna love stories, Vrindavan leelas
+- "ram"           → Ram katha, Ramayana stories, Ram's leelas
+- "sita_ram"      → Sita Ram together, their divine relationship
+- "hanuman"       → Hanuman katha, Hanuman's devotion to Ram
+- "bhagwat"       → Bhagavad Gita, scripture recitation, shlokas, opening/closing
+- "bhajan"        → Bhajan singing, kirtan, naam-jap, devotional songs
+- "general"       → Any other devotional content
 
 CONTENT DETECTION RULES:
-1. KATHA / NARRATION (story telling, leela description): images change every 6-12 seconds. Choose a deity category that matches the story being told. If narrating Dhruv Bhakt story → use "krishna" or "bhagwat". If Ram katha → use "ram" or "sita_ram".
-2. BHAJAN SECTIONS (when the speaker sings, or a devotional song/kirtan plays — look for repeated naam-jap phrases, "Hare Krishna", "Jai Shri Ram", "Govinda" etc.): images change every 20-35 seconds. Use "bhajan", "radha_krishna", "sita_ram", or matching deity. These sections MUST have LONGER image durations — this creates a peaceful meditative feel.
-3. SHLOKA / VERSE RECITATION (Sanskrit shlokas or verses): images change every 10-16 seconds. Prefer "bhagwat" or "krishna".
-4. INTRODUCTION / CLOSING / TRANSITIONS: images change every 8-12 seconds. Use "bhagwat" or "general".
+1. KATHA / NARRATION (storytelling, leela descriptions): imageChangeEvery = 6–12 seconds. Choose the deity category matching the story. Dhruv Bhakt / Prahladh ji → "krishna" or "bhagwat". Ram katha → "ram" or "sita_ram".
+2. BHAJAN / KIRTAN / NAAM-JAP (repeated devotional phrases, song lyrics, musical patterns): imageChangeEvery = 20–35 seconds. Use "bhajan", "radha_krishna", "sita_ram", or matching deity. MUST be ≥ 20 seconds — creates meditative peace.
+3. SHLOKA / VERSE RECITATION (Sanskrit verses): imageChangeEvery = 10–16 seconds. Prefer "bhagwat" or "krishna".
+4. INTRODUCTION / CLOSING / TRANSITIONS: imageChangeEvery = 8–12 seconds. Use "bhagwat" or "general".
 
-For bhajan detection in Hindi transcripts: look for repeated lines, devotional song lyrics (doha/chaupai), or musical/rhythmic patterns. These must have imageChangeEvery ≥ 20.
+Bhajan detection in Hindi: look for repeated lines, song lyrics (doha/chaupai), "Hare Krishna", "Jai Shri Ram", "Govinda", "Siya Ram" naam-jap patterns.
 
 ${mode === "full"
-  ? `FULL COVERAGE MODE: Your timeline MUST cover every second from 0s to ${videoDuration}s with NO gaps. Segments must be contiguous. First segment must start at 0. Last segment must end at exactly ${videoDuration}.`
-  : `SMART MODE: Cover the most engaging, story-rich, and devotionally significant sections. You do not need to cover every second.`
+  ? `FULL COVERAGE MODE: Timeline MUST cover every second from 0 to ${videoDuration}s with NO gaps. First segment starts at 0, last ends at exactly ${videoDuration}.`
+  : `SMART MODE: Cover the most engaging, story-rich, devotionally significant sections. No need to cover every second.`
 }
 
-CRITICAL: Respond with ONLY a valid JSON array — no markdown fences, no extra text:
-[{"startSec": 0, "endSec": 180, "category": "bhagwat", "isBhajan": false, "imageChangeEvery": 10, "description": "Brief English description of this section"}]`,
+CRITICAL: Respond with ONLY a valid JSON array — no markdown fences, no extra text. The "description" field must be a short English phrase describing exactly what is happening in this segment (e.g., "Dhruv Bhakt meditating in the forest", "Kirtan of Hare Krishna", "Opening prayers"):
+[{"startSec": 0, "endSec": 180, "category": "bhagwat", "isBhajan": false, "imageChangeEvery": 10, "description": "Opening prayer and introduction"}]`,
     });
 
     const userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}${transcriptBlock}
 
-Create a complete image timeline for this devotional video. Identify every katha, bhajan, and shloka section. For bhajans, use imageChangeEvery of 20-35. Cover the ${mode === "full" ? "FULL video with no gaps" : "best moments"}.`;
+Create a complete image timeline. Identify every katha, bhajan, and shloka section. For bhajans use imageChangeEvery 20–35. Descriptions must be specific to the content being narrated so AI can generate accurate images. Cover the ${mode === "full" ? "FULL video with no gaps" : "best moments"}.`;
 
     const result = await model.generateContent(userContent);
     const raw = result.response.text().trim();
 
-    // Parse AI response
     let timeline: TimelineSegment[] = [];
     try {
-      let cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+      const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
       const arr = JSON.parse(cleaned);
       if (Array.isArray(arr)) {
-        timeline = arr.filter((s: any) => s && typeof s.startSec === "number" && typeof s.endSec === "number" && s.endSec > s.startSec)
+        timeline = arr
+          .filter((s: any) => s && typeof s.startSec === "number" && typeof s.endSec === "number" && s.endSec > s.startSec)
           .map((s: any): TimelineSegment => ({
             startSec: Math.max(0, Math.round(s.startSec)),
             endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
             category: BHAGWAT_CATEGORIES.find(c => c.id === s.category) ? s.category : "general",
             isBhajan: s.isBhajan === true,
             imageChangeEvery: Math.max(3, Math.min(60, Math.round(s.imageChangeEvery ?? 8))),
-            description: s.description ?? "",
+            description: (s.description ?? "").slice(0, 200),
           }));
       }
     } catch {
@@ -471,11 +519,9 @@ Create a complete image timeline for this devotional video. Identify every katha
     // Normalize: sort + close gaps for full mode
     timeline.sort((a, b) => a.startSec - b.startSec);
     if (mode === "full" && videoDuration > 0) {
-      // Fill gap at start
       if (timeline[0].startSec > 0) {
         timeline.unshift({ startSec: 0, endSec: timeline[0].startSec, category: "bhagwat", isBhajan: false, imageChangeEvery: 8, description: "Opening" });
       }
-      // Fill gaps between segments
       const filled: TimelineSegment[] = [timeline[0]];
       for (let i = 1; i < timeline.length; i++) {
         const prev = filled[filled.length - 1];
@@ -484,7 +530,6 @@ Create a complete image timeline for this devotional video. Identify every katha
         }
         filled.push(timeline[i]);
       }
-      // Extend last to cover full duration
       filled[filled.length - 1].endSec = videoDuration;
       timeline = filled;
     }
@@ -500,7 +545,12 @@ Create a complete image timeline for this devotional video. Identify every katha
     job.status = "error";
     job.error = message;
     emit("error", { message });
-    try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} } } catch {}
+    try {
+      if (existsSync(subDir)) {
+        for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {}
+        rmdirSync(subDir);
+      }
+    } catch {}
   }
 }
 
@@ -516,63 +566,75 @@ async function runBhagwatRender(
   const concatPath = `${tmpBase}_concat.txt`;
   const audioPath = `${tmpBase}_audio`;
   const outputPath = join(BHAGWAT_RENDERED_DIR, `${jobId}.mp4`);
+  const imgDir = join(BHAGWAT_TMP_DIR, `imgs_${tmpId}`);
+  mkdirSync(imgDir, { recursive: true });
 
   try {
-    emit("progress", { phase: "download", percent: 0, message: "Downloading audio from YouTube…" });
+    if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured on the server");
 
-    // Download audio
-    const audioOut = await runYtDlp([
-      "-f", "bestaudio",
-      "--no-playlist",
-      "--no-warnings",
-      "-o", `${audioPath}.%(ext)s`,
-      url,
-    ]);
+    // Step 1: Download audio
+    emit("progress", { phase: "download", percent: 5, message: "Downloading audio from YouTube…" });
+    await runYtDlp(["-f", "bestaudio", "--no-playlist", "--no-warnings", "-o", `${audioPath}.%(ext)s`, url]);
 
-    // Find downloaded audio file
-    const tmpDir2 = BHAGWAT_TMP_DIR;
-    const audioFiles = readdirSync(tmpDir2).filter(f => f.startsWith(basename(audioPath)));
-    const audioFile = audioFiles.length > 0 ? join(tmpDir2, audioFiles[0]) : null;
+    const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter(f => f.startsWith(basename(audioPath)));
+    const audioFile = audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
     if (!audioFile || !existsSync(audioFile)) throw new Error("Failed to download audio from YouTube");
 
-    emit("progress", { phase: "download", percent: 20, message: "Audio downloaded. Building image slideshow…" });
+    emit("progress", { phase: "images", percent: 10, message: "AI is generating devotional images…" });
 
-    // Load image library
-    const images = loadImages();
-    if (images.length === 0) throw new Error("No images in library. Please upload at least one image.");
+    // Step 2: Generate images with Gemini
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    let generatedCount = 0;
 
-    // Build concat list
+    const imageMap = await generateImagePool(
+      genAI,
+      timeline,
+      imgDir,
+      (msg) => {
+        generatedCount++;
+        const pct = 10 + Math.min(50, Math.round((generatedCount / (timeline.length * 0.5)) * 40));
+        emit("progress", { phase: "images", percent: pct, message: msg });
+      }
+    );
+
+    // Verify at least some images were generated
+    const allGenerated = [...imageMap.values()].flat().filter(p => existsSync(p));
+    if (allGenerated.length === 0) throw new Error("AI image generation failed — no images were created");
+
+    emit("progress", { phase: "images", percent: 60, message: `${allGenerated.length} images generated. Building video…` });
+
+    // Step 3: Build ffmpeg concat list
     const concatLines: string[] = [];
-    let imgIndexByCategory: Record<string, number> = {};
+    const usedIndexByKey = new Map<string, number>();
 
     for (const segment of timeline) {
       const segDuration = segment.endSec - segment.startSec;
       if (segDuration <= 0) continue;
-      let elapsed = 0;
+      const key = `${segment.category}_${segment.isBhajan ? "bhajan" : "katha"}`;
+      const pool = (imageMap.get(key) ?? allGenerated).filter(p => existsSync(p));
+      if (pool.length === 0) continue;
 
+      let elapsed = 0;
       while (elapsed < segDuration - 0.1) {
         const thisDuration = Math.min(segment.imageChangeEvery, segDuration - elapsed);
-        const catIdx = imgIndexByCategory[segment.category] ?? 0;
-        const img = pickImageForCategory(segment.category, images, catIdx);
-        imgIndexByCategory[segment.category] = catIdx + 1;
-
-        if (!img) break;
-        const fp = imagePath(img).replace(/'/g, "'\\''");
-        concatLines.push(`file '${fp}'`);
+        const idx = usedIndexByKey.get(key) ?? 0;
+        const imgPath = pool[idx % pool.length].replace(/'/g, "'\\''");
+        concatLines.push(`file '${imgPath}'`);
         concatLines.push(`duration ${thisDuration.toFixed(3)}`);
+        usedIndexByKey.set(key, idx + 1);
         elapsed += thisDuration;
       }
     }
 
-    if (concatLines.length === 0) throw new Error("Could not build image list — check your image library.");
+    if (concatLines.length === 0) throw new Error("Could not build image list from generated images");
 
-    // FFmpeg concat demuxer quirk: last file needs to appear again without duration
+    // FFmpeg concat quirk: repeat last file without duration
     const lastFileLine = [...concatLines].reverse().find(l => l.startsWith("file"));
     if (lastFileLine) concatLines.push(lastFileLine);
 
     writeFileSync(concatPath, concatLines.join("\n"));
 
-    emit("progress", { phase: "render", percent: 30, message: "Rendering video with FFmpeg…" });
+    emit("progress", { phase: "render", percent: 65, message: "Rendering video with FFmpeg…" });
 
     const totalDuration = timeline.reduce((sum, s) => sum + (s.endSec - s.startSec), 0);
     const videoTitle = `bhagwat_video_${tmpId.slice(0, 6)}`;
@@ -583,7 +645,7 @@ async function runBhagwatRender(
         "-f", "concat", "-safe", "0", "-i", concatPath,
         "-i", audioFile,
         "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest",
         "-y",
@@ -594,13 +656,12 @@ async function runBhagwatRender(
       let stderr = "";
       ff.stderr.on("data", (d: Buffer) => {
         stderr += d.toString();
-        // Parse progress: time=HH:MM:SS.ms
         const match = stderr.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/g);
         if (match) {
           const last = match[match.length - 1];
           const [, h, m, s] = last.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/)!;
           const processedSec = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s);
-          const pct = totalDuration > 0 ? Math.min(95, 30 + Math.round((processedSec / totalDuration) * 65)) : 50;
+          const pct = totalDuration > 0 ? Math.min(98, 65 + Math.round((processedSec / totalDuration) * 33)) : 80;
           emit("progress", { phase: "render", percent: pct, message: `Rendering… ${formatTime(processedSec)} / ${formatTime(totalDuration)}` });
         }
       });
@@ -613,9 +674,12 @@ async function runBhagwatRender(
     // Cleanup tmp files
     try { unlinkSync(concatPath); } catch {}
     try { unlinkSync(audioFile); } catch {}
+    try {
+      for (const f of readdirSync(imgDir)) try { unlinkSync(join(imgDir, f)); } catch {}
+      rmdirSync(imgDir);
+    } catch {}
 
     emit("progress", { phase: "done", percent: 100, message: "Video ready for download!" });
-
     job.status = "done";
     job.outputPath = outputPath;
     emit("done", { downloadUrl: `/api/bhagwat/download/${jobId}`, filename: job.filename });
@@ -625,6 +689,10 @@ async function runBhagwatRender(
     job.error = message;
     emit("error", { message });
     try { unlinkSync(concatPath); } catch {}
+    try {
+      for (const f of readdirSync(imgDir)) try { unlinkSync(join(imgDir, f)); } catch {}
+      rmdirSync(imgDir);
+    } catch {}
   }
 }
 

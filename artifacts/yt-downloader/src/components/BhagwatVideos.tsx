@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Lock, Unlock, Upload, Trash2, Image, Scissors, Film,
-  ChevronDown, ChevronUp, Loader2, CheckCircle2, AlertCircle,
-  Download, Sparkles, Wand2, Bot, FileText, Wifi, X, Eye, EyeOff,
+  Lock, Unlock, Film, Loader2, CheckCircle2, AlertCircle,
+  Download, Wand2, Bot, FileText, Wifi, Eye, EyeOff, Sparkles, ImageIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,12 +11,10 @@ import { useToast } from "@/hooks/use-toast";
 import { BestClips } from "@/components/BestClips";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface ImageMeta { id: string; name: string; category: string; ext: string; }
 interface TimelineSegment {
   startSec: number; endSec: number; category: string;
   isBhajan: boolean; imageChangeEvery: number; description: string;
 }
-interface Category { id: string; label: string; }
 
 const CATEGORY_COLORS: Record<string, string> = {
   krishna:       "text-blue-300 border-blue-500/40 bg-blue-500/10",
@@ -30,10 +27,17 @@ const CATEGORY_COLORS: Record<string, string> = {
   general:       "text-white/50 border-white/20 bg-white/5",
 };
 
+const CATEGORY_LABELS: Record<string, string> = {
+  krishna: "Lord Krishna", radha_krishna: "Radha Krishna",
+  ram: "Lord Ram", sita_ram: "Sita Ram",
+  hanuman: "Lord Hanuman", bhagwat: "Bhagwat / Scripture",
+  bhajan: "Bhajan / Aarti", general: "General Devotional",
+};
+
 function formatSec(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
-  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
-  return `${m}:${String(sec).padStart(2,"0")}`;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 const CORRECT_PASSWORD = "bhagwatnarrationvideos@clips2026";
@@ -44,7 +48,6 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
-  const { toast } = useToast();
 
   const attempt = () => {
     if (pw === CORRECT_PASSWORD) {
@@ -70,7 +73,6 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
           <h2 className="text-2xl font-display font-bold text-white">Bhagwat Videos</h2>
           <p className="text-white/50 text-sm mt-1">This section is password protected</p>
         </div>
-
         <div className="w-full space-y-3">
           <div className="relative">
             <input
@@ -100,178 +102,8 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
-// ── Image Library ─────────────────────────────────────────────────────────────
-function ImageLibrary({
-  images, categories, BASE,
-  onImagesChange,
-}: {
-  images: ImageMeta[];
-  categories: Category[];
-  BASE: string;
-  onImagesChange: (imgs: ImageMeta[]) => void;
-}) {
-  const [uploadCategory, setUploadCategory] = useState("krishna");
-  const [uploading, setUploading] = useState(false);
-  const [expanded, setExpanded] = useState(true);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const { toast } = useToast();
-
-  const handleUpload = async (files: FileList) => {
-    setUploading(true);
-    let added = 0;
-    for (const file of Array.from(files)) {
-      try {
-        const fd = new FormData();
-        fd.append("image", file);
-        fd.append("category", uploadCategory);
-        const res = await fetch(`${BASE}/api/bhagwat/upload-image`, { method: "POST", body: fd });
-        if (res.ok) { added++; }
-      } catch {}
-    }
-    setUploading(false);
-    if (added > 0) {
-      toast({ title: `${added} image${added > 1 ? "s" : ""} uploaded` });
-      refreshImages();
-    }
-  };
-
-  const refreshImages = async () => {
-    try {
-      const res = await fetch(`${BASE}/api/bhagwat/images`);
-      if (res.ok) { const d = await res.json(); onImagesChange(d.images); }
-    } catch {}
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      await fetch(`${BASE}/api/bhagwat/image/${id}`, { method: "DELETE" });
-      onImagesChange(images.filter(i => i.id !== id));
-    } catch {
-      toast({ title: "Failed to delete image", variant: "destructive" });
-    }
-  };
-
-  const grouped = categories.map(cat => ({
-    ...cat,
-    images: images.filter(i => i.category === cat.id),
-  })).filter(cat => cat.images.length > 0);
-
-  return (
-    <div className="glass-panel rounded-2xl overflow-hidden">
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center justify-between p-4 hover:bg-white/5 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <Image className="w-5 h-5 text-amber-400" />
-          <span className="font-semibold text-white">Image Library</span>
-          <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30 text-xs">
-            {images.length} image{images.length !== 1 ? "s" : ""}
-          </Badge>
-        </div>
-        {expanded ? <ChevronUp className="w-4 h-4 text-white/40" /> : <ChevronDown className="w-4 h-4 text-white/40" />}
-      </button>
-
-      <AnimatePresence>
-        {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3 }}
-            className="overflow-hidden"
-          >
-            <div className="px-4 pb-4 space-y-4">
-              {/* Upload area */}
-              <div
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) handleUpload(e.dataTransfer.files); }}
-                className="border-2 border-dashed border-white/15 rounded-xl p-4 hover:border-amber-500/40 transition-colors"
-              >
-                <div className="flex flex-col sm:flex-row items-center gap-3">
-                  <div className="flex flex-wrap gap-2 flex-1 justify-center sm:justify-start">
-                    {categories.map(cat => (
-                      <button
-                        key={cat.id}
-                        onClick={() => setUploadCategory(cat.id)}
-                        className={cn(
-                          "px-2.5 py-1 rounded-lg text-xs font-medium border transition-all",
-                          uploadCategory === cat.id
-                            ? CATEGORY_COLORS[cat.id] + " !border-current"
-                            : "border-white/10 text-white/40 hover:text-white/70"
-                        )}
-                      >
-                        {cat.label}
-                      </button>
-                    ))}
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => fileRef.current?.click()}
-                    disabled={uploading}
-                    className="bg-amber-600/80 hover:bg-amber-500 shrink-0"
-                  >
-                    {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Upload className="w-3.5 h-3.5 mr-1.5" />}
-                    Upload Images
-                  </Button>
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={e => { if (e.target.files?.length) handleUpload(e.target.files); e.target.value = ""; }}
-                  />
-                </div>
-                <p className="text-white/30 text-xs text-center mt-2">
-                  Select category first, then upload · Drag & drop supported
-                </p>
-              </div>
-
-              {/* Uploaded images by category */}
-              {grouped.length === 0 && (
-                <p className="text-white/30 text-sm text-center py-2">
-                  No images yet — upload some to get started
-                </p>
-              )}
-              {grouped.map(cat => (
-                <div key={cat.id}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Badge className={cn("text-xs border", CATEGORY_COLORS[cat.id])}>
-                      {cat.label}
-                    </Badge>
-                    <span className="text-white/30 text-xs">{cat.images.length} image{cat.images.length !== 1 ? "s" : ""}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {cat.images.map(img => (
-                      <div key={img.id} className="relative group">
-                        <img
-                          src={`${BASE}/api/bhagwat/image-file/${img.id}${img.ext}`}
-                          alt={img.name}
-                          className="w-16 h-16 object-cover rounded-lg border border-white/10 group-hover:border-white/30 transition-colors"
-                        />
-                        <button
-                          onClick={() => handleDelete(img.id)}
-                          className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
-                        >
-                          <X className="w-3 h-3 text-white" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 // ── Timeline Preview ──────────────────────────────────────────────────────────
-function TimelinePreview({ timeline, categories }: { timeline: TimelineSegment[]; categories: Category[] }) {
-  const catLabel = (id: string) => categories.find(c => c.id === id)?.label ?? id;
+function TimelinePreview({ timeline }: { timeline: TimelineSegment[] }) {
   const totalDur = timeline.reduce((s, seg) => s + (seg.endSec - seg.startSec), 0);
 
   return (
@@ -279,7 +111,7 @@ function TimelinePreview({ timeline, categories }: { timeline: TimelineSegment[]
       <div className="flex items-center justify-between">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Film className="w-4 h-4 text-amber-400" />
-          Image Timeline
+          AI Image Timeline
         </h3>
         <span className="text-white/40 text-xs">{timeline.length} segments · {formatSec(totalDur)}</span>
       </div>
@@ -300,13 +132,13 @@ function TimelinePreview({ timeline, categories }: { timeline: TimelineSegment[]
               key={i}
               style={{ width: `${pct}%` }}
               className={cn("h-full min-w-[2px] transition-all", color)}
-              title={`${formatSec(seg.startSec)} – ${formatSec(seg.endSec)} · ${catLabel(seg.category)}`}
+              title={`${formatSec(seg.startSec)} – ${formatSec(seg.endSec)} · ${CATEGORY_LABELS[seg.category] ?? seg.category}`}
             />
           );
         })}
       </div>
 
-      {/* Segment list (scrollable) */}
+      {/* Segment list */}
       <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
         {timeline.map((seg, i) => (
           <div key={i} className="flex items-start gap-3 text-sm">
@@ -314,10 +146,10 @@ function TimelinePreview({ timeline, categories }: { timeline: TimelineSegment[]
               {formatSec(seg.startSec)} – {formatSec(seg.endSec)}
             </span>
             <Badge className={cn("text-xs border shrink-0", CATEGORY_COLORS[seg.category])}>
-              {catLabel(seg.category)}
+              {CATEGORY_LABELS[seg.category] ?? seg.category}
               {seg.isBhajan && " ♪"}
             </Badge>
-            <span className="text-white/50 text-xs leading-tight truncate">{seg.description}</span>
+            <span className="text-white/50 text-xs leading-tight flex-1 truncate">{seg.description}</span>
             <span className="text-white/25 text-xs shrink-0">↻{seg.imageChangeEvery}s</span>
           </div>
         ))}
@@ -330,8 +162,6 @@ function TimelinePreview({ timeline, categories }: { timeline: TimelineSegment[]
 function BhagwatEditor({ BASE }: { BASE: string }) {
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"full" | "smart">("full");
-  const [images, setImages] = useState<ImageMeta[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [timeline, setTimeline] = useState<TimelineSegment[] | null>(null);
   const [videoTitle, setVideoTitle] = useState("");
   const [videoDuration, setVideoDuration] = useState(0);
@@ -346,19 +176,11 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
   const { toast } = useToast();
   const esRef = useRef<EventSource | null>(null);
 
-  useEffect(() => {
-    fetch(`${BASE}/api/bhagwat/images`)
-      .then(r => r.json())
-      .then(d => { setImages(d.images ?? []); setCategories(d.categories ?? []); })
-      .catch(() => {});
-  }, [BASE]);
-
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
 
   const handleAnalyze = async () => {
     if (!url.trim()) { toast({ title: "Paste a YouTube URL first", variant: "destructive" }); return; }
-    if (images.length === 0) { toast({ title: "Upload at least one image first", variant: "destructive" }); return; }
     esRef.current?.close();
     setPhase("analyzing");
     setTimeline(null);
@@ -452,34 +274,40 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
 
   return (
     <div className="space-y-5">
-      {/* Image Library */}
-      <ImageLibrary
-        images={images}
-        categories={categories}
-        BASE={BASE}
-        onImagesChange={setImages}
-      />
+
+      {/* AI Banner */}
+      <div className="glass-panel rounded-2xl p-4 flex items-start gap-3 border border-amber-500/20 bg-amber-500/5">
+        <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
+          <Sparkles className="w-4 h-4 text-amber-400" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-amber-300">Fully AI-powered</p>
+          <p className="text-xs text-white/50 mt-0.5 leading-relaxed">
+            Paste any Bhagwat Katha YouTube URL. AI reads the transcript, identifies every katha, bhajan, and shloka section, then generates beautiful devotional images using Gemini — Lord Krishna for Krishna leelas, Sita-Ram for Ram katha, serene bhajan visuals during kirtan, and more. No uploads needed.
+          </p>
+        </div>
+      </div>
 
       {/* URL + Mode */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Wand2 className="w-4 h-4 text-amber-400" />
-          Create Image Video
+          Create Devotional Image Video
         </h3>
 
         <input
           type="text"
           value={url}
           onChange={e => setUrl(e.target.value)}
-          placeholder="Paste YouTube URL…"
+          placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
           className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-amber-500/50 text-sm"
         />
 
         {/* Mode selection */}
         <div className="flex gap-2">
           {([
-            { v: "full",  label: "Full Coverage", desc: "Images cover every second of the video" },
-            { v: "smart", label: "AI Smart",       desc: "AI picks the best moments for images" },
+            { v: "full",  label: "Full Coverage", desc: "AI places images throughout the entire video from start to end" },
+            { v: "smart", label: "AI Smart Placement", desc: "AI selects the most impactful moments for image overlays" },
           ] as const).map(opt => (
             <button
               key={opt.v}
@@ -533,9 +361,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
                      <Icon className="w-3.5 h-3.5 text-white/30" />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-white/80">{STEP_LABELS[name]}</span>
-                    </div>
+                    <span className="text-sm font-medium text-white/80">{STEP_LABELS[name]}</span>
                     {s?.message && <p className="text-xs text-white/40 truncate">{s.message}</p>}
                   </div>
                 </div>
@@ -548,156 +374,191 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
       {/* Error */}
       <AnimatePresence>
         {phase === "error" && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-panel rounded-2xl p-4 border border-red-500/20">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="glass-panel rounded-2xl p-4 border border-red-500/30 bg-red-500/5"
+          >
             <div className="flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-red-300 font-medium text-sm">Something went wrong</p>
-                <p className="text-red-400/70 text-xs mt-0.5">{errorMsg}</p>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-red-300 mb-1">Something went wrong</p>
+                <p className="text-xs text-white/50">{errorMsg}</p>
               </div>
             </div>
+            <Button
+              size="sm"
+              onClick={() => { setPhase("idle"); setErrorMsg(""); }}
+              className="mt-3 bg-white/10 hover:bg-white/15 border-white/10 text-white/70"
+            >
+              Try Again
+            </Button>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Timeline Preview */}
       <AnimatePresence>
-        {timeline && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-            <TimelinePreview timeline={timeline} categories={categories} />
+        {phase === "analyzed" && timeline && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-4"
+          >
+            {videoTitle && (
+              <div className="px-1">
+                <p className="text-white/60 text-sm">
+                  <span className="text-amber-400 font-semibold">"{videoTitle}"</span>
+                  {videoDuration > 0 && <span className="text-white/30 ml-2">· {formatSec(videoDuration)}</span>}
+                </p>
+              </div>
+            )}
+
+            <TimelinePreview timeline={timeline} />
+
+            {/* AI Image Generation info */}
+            <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
+              <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
+              <p className="text-xs text-white/50 leading-relaxed">
+                Gemini will generate <span className="text-violet-300 font-medium">~{Math.min(30, Math.ceil(new Set(timeline.map(s => s.category + "_" + s.isBhajan)).size * 3))} devotional images</span> — specific to each katha, bhajan, and shloka section detected above — then render the full video.
+              </p>
+            </div>
+
+            <Button
+              onClick={handleRender}
+              className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30 text-white shadow-[0_0_30px_rgba(217,119,6,0.3)]"
+            >
+              <Sparkles className="w-4 h-4 mr-2" />
+              Generate Images &amp; Render Video
+            </Button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Render Section */}
+      {/* Render Progress */}
       <AnimatePresence>
-        {timeline && phase !== "analyzing" && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-panel rounded-2xl p-5 space-y-4">
-            <h3 className="font-semibold text-white flex items-center gap-2">
-              <Film className="w-4 h-4 text-amber-400" />
-              Render Video
-              {videoTitle && <span className="text-white/40 font-normal text-sm truncate max-w-xs">— {videoTitle}</span>}
-            </h3>
-
-            {phase === "rendering" && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-white/60">{renderMessage || "Rendering…"}</span>
-                  <span className="text-white/40 tabular-nums">{renderPercent}%</span>
-                </div>
-                <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full"
-                    animate={{ width: `${renderPercent}%` }}
-                    transition={{ duration: 0.5 }}
-                  />
-                </div>
+        {phase === "rendering" && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="glass-panel rounded-2xl p-5 space-y-4"
+          >
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-amber-400 animate-spin shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-white">
+                  {renderPercent < 10 ? "Downloading audio…" :
+                   renderPercent < 60 ? "Gemini is generating devotional images…" :
+                   renderPercent < 65 ? "Building image sequence…" :
+                   "Rendering with FFmpeg…"}
+                </p>
+                <p className="text-xs text-white/40 mt-0.5">{renderMessage}</p>
               </div>
-            )}
-
-            {phase === "done" && downloadUrl && (
-              <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/20 rounded-xl p-4">
-                <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0" />
-                <div className="flex-1">
-                  <p className="text-green-300 font-medium text-sm">Video is ready!</p>
-                  <p className="text-green-400/60 text-xs">{downloadFilename}</p>
-                </div>
-                <a href={downloadUrl} download={downloadFilename}>
-                  <Button size="sm" className="bg-green-600 hover:bg-green-500">
-                    <Download className="w-4 h-4 mr-1.5" /> Download
-                  </Button>
-                </a>
-              </div>
-            )}
-
-            {phase !== "done" && (
-              <Button
-                onClick={handleRender}
-                disabled={phase === "rendering" || phase === "analyzing"}
-                className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30"
-              >
-                {phase === "rendering" ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Rendering…</>
-                ) : (
-                  <><Film className="w-4 h-4 mr-2" /> Render with Images</>
-                )}
-              </Button>
-            )}
-
-            {phase === "done" && (
-              <Button
-                variant="glass"
-                onClick={() => { setPhase("analyzed"); setDownloadUrl(null); setRenderPercent(0); }}
-                className="w-full"
-              >
-                Render Again
-              </Button>
-            )}
+              <span className="text-amber-400 font-bold text-sm tabular-nums">{renderPercent}%</span>
+            </div>
+            <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+              <motion.div
+                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full"
+                animate={{ width: `${renderPercent}%` }}
+                transition={{ duration: 0.5 }}
+              />
+            </div>
+            <p className="text-xs text-white/30 text-center">
+              {renderPercent < 60
+                ? "Generating unique AI images for each section of the katha — this takes a few minutes"
+                : "Compositing images with the audio track using FFmpeg"}
+            </p>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Download Ready */}
+      <AnimatePresence>
+        {phase === "done" && downloadUrl && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="glass-panel rounded-2xl p-5 space-y-4 border border-green-500/30 bg-green-500/5"
+          >
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0" />
+              <div>
+                <p className="font-semibold text-white">Video Ready!</p>
+                <p className="text-xs text-white/40">Devotional images generated and rendered successfully</p>
+              </div>
+            </div>
+            <a
+              href={downloadUrl}
+              download={downloadFilename}
+              className="flex items-center justify-center gap-2 w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-3 rounded-xl transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              Download Video
+            </a>
+            <Button
+              size="sm"
+              onClick={() => { setPhase("idle"); setTimeline(null); setDownloadUrl(null); setUrl(""); }}
+              className="w-full bg-white/5 hover:bg-white/10 border-white/10 text-white/50"
+            >
+              Start New Video
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div>
   );
 }
 
-// ── Main Export ───────────────────────────────────────────────────────────────
-export function BhagwatVideos({ initialUrl }: { initialUrl?: string }) {
-  const [isUnlocked, setIsUnlocked] = useState(() => sessionStorage.getItem(STORAGE_KEY) === "1");
-  const [subTab, setSubTab] = useState<"clips" | "editor">("editor");
-  const [clipsUrl, setClipsUrl] = useState(initialUrl ?? "");
-  const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "");
+// ── BhagwatVideos (tab panels) ────────────────────────────────────────────────
+export function BhagwatVideos() {
+  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(STORAGE_KEY) === "1");
+  const [tab, setTab] = useState<"clips" | "editor">("editor");
 
-  if (!isUnlocked) {
-    return <PasswordGate onUnlock={() => setIsUnlocked(true)} />;
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  if (!unlocked) {
+    return <PasswordGate onUnlock={() => setUnlocked(true)} />;
   }
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       className="space-y-5"
     >
       {/* Sub-tabs */}
       <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1">
         <button
-          onClick={() => setSubTab("editor")}
+          onClick={() => setTab("editor")}
           className={cn(
-            "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all",
-            subTab === "editor"
+            "flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold transition-all",
+            tab === "editor"
               ? "bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-[0_0_20px_rgba(217,119,6,0.3)]"
               : "text-white/50 hover:text-white/80"
           )}
         >
-          <Wand2 className="w-4 h-4" />
-          Image Video Editor
+          <Sparkles className="w-4 h-4" />
+          AI Image Video
         </button>
         <button
-          onClick={() => setSubTab("clips")}
+          onClick={() => setTab("clips")}
           className={cn(
-            "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all",
-            subTab === "clips"
+            "flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold transition-all",
+            tab === "clips"
               ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)]"
               : "text-white/50 hover:text-white/80"
           )}
         >
-          <Scissors className="w-4 h-4" />
+          <Film className="w-4 h-4" />
           Find Clips
-          <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0">AI</Badge>
         </button>
       </div>
 
-      {/* Content */}
-      <AnimatePresence mode="wait">
-        {subTab === "editor" ? (
-          <motion.div key="editor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <BhagwatEditor BASE={BASE} />
-          </motion.div>
-        ) : (
-          <motion.div key="clips" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <BestClips url={clipsUrl} />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {tab === "editor" && <BhagwatEditor BASE={BASE} />}
+      {tab === "clips" && <BestClips url="" />}
     </motion.div>
   );
 }
