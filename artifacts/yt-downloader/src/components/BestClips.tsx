@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
-  AlertTriangle
+  AlertTriangle, Wand2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -62,7 +62,8 @@ function formatDuration(seconds: number): string {
 }
 
 export function BestClips({ url }: Props) {
-  const [selectedDurations, setSelectedDurations] = useState<number[]>([60, 180, 300, 600]);
+  const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
+  const [isAutoMode, setIsAutoMode] = useState(false);
   const [clips, setClips] = useState<BestClip[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasTranscript, setHasTranscript] = useState(false);
@@ -105,7 +106,7 @@ export function BestClips({ url }: Props) {
   };
 
   const handleAnalyze = async () => {
-    if (!url.trim() || selectedDurations.length === 0) return;
+    if (!url.trim() || (!isAutoMode && selectedDurations.length === 0)) return;
 
     // Close any previous SSE
     esRef.current?.close();
@@ -123,7 +124,11 @@ export function BestClips({ url }: Props) {
       const startRes = await fetch(`${BASE}/api/youtube/clips`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), durations: selectedDurations }),
+        body: JSON.stringify(
+          isAutoMode
+            ? { url: url.trim(), auto: true }
+            : { url: url.trim(), durations: selectedDurations }
+        ),
       });
       const startData = await startRes.json();
       if (!startRes.ok) throw new Error(startData.error ?? "Failed to start analysis");
@@ -258,31 +263,65 @@ export function BestClips({ url }: Props) {
 
         <div className="space-y-3">
           <p className="text-white/60 text-sm font-medium">Select clip durations to find:</p>
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2">
+            {/* Auto mode button */}
+            <button
+              onClick={() => setIsAutoMode(prev => !prev)}
+              className={cn(
+                "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200 flex items-center gap-1.5",
+                isAutoMode
+                  ? "bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.25)]"
+                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
+              )}
+            >
+              <Wand2 className="w-3.5 h-3.5" />
+              Auto
+            </button>
+
+            {/* Manual duration buttons — dimmed when Auto is active */}
             {DURATION_OPTIONS.map(opt => (
               <button
                 key={opt.value}
-                onClick={() => toggleDuration(opt.value)}
+                onClick={() => {
+                  setIsAutoMode(false);
+                  setSelectedDurations(prev =>
+                    prev.includes(opt.value) ? prev.filter(v => v !== opt.value) : [...prev, opt.value]
+                  );
+                }}
                 className={cn(
                   "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200",
-                  selectedDurations.includes(opt.value)
+                  isAutoMode && "opacity-30 cursor-default",
+                  !isAutoMode && selectedDurations.includes(opt.value)
                     ? "bg-primary/20 border-primary/50 text-white shadow-[0_0_12px_rgba(229,9,20,0.2)]"
-                    : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
+                    : !isAutoMode
+                      ? "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
+                      : "bg-white/5 border-white/10 text-white/30"
                 )}
               >{opt.label}</button>
             ))}
           </div>
+          {isAutoMode && (
+            <p className="text-amber-300/70 text-xs flex items-center gap-1.5">
+              <Wand2 className="w-3 h-3" />
+              AI will decide the best duration for each clip — no presets, full creative control
+            </p>
+          )}
         </div>
 
         <Button
           onClick={handleAnalyze}
-          disabled={isLoading || !url.trim() || selectedDurations.length === 0}
-          className="w-full h-12 rounded-xl"
+          disabled={isLoading || !url.trim() || (!isAutoMode && selectedDurations.length === 0)}
+          className={cn(
+            "w-full h-12 rounded-xl transition-all duration-300",
+            isAutoMode && !isLoading && "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30"
+          )}
           size="lg"
         >
           {isLoading
             ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Analyzing video...</span>
-            : <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best Clips</span>
+            : isAutoMode
+              ? <span className="flex items-center gap-2"><Wand2 className="w-4 h-4" />Auto Find Best Clips</span>
+              : <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best Clips</span>
           }
         </Button>
       </div>
