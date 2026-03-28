@@ -33,6 +33,19 @@ function cleanupOldFiles() {
 setInterval(cleanupOldFiles, 30 * 60 * 1000);
 cleanupOldFiles();
 
+// Auto-delete a job's file 5 minutes after it's ready
+const AUTO_DELETE_MS = 5 * 60 * 1000;
+function scheduleAutoDelete(jobId: string, jobRef: { filePath: string | null; status: string }) {
+  setTimeout(() => {
+    if (jobRef.filePath) {
+      try { unlinkSync(jobRef.filePath); } catch {}
+      jobRef.filePath = null;
+    }
+    jobRef.status = "expired";
+    setTimeout(() => jobs.delete(jobId), 60_000);
+  }, AUTO_DELETE_MS);
+}
+
 interface VideoFormatOut {
   formatId: string;
   ext: string;
@@ -48,7 +61,7 @@ interface VideoFormatOut {
 }
 
 interface DownloadJob {
-  status: "pending" | "downloading" | "merging" | "done" | "error";
+  status: "pending" | "downloading" | "merging" | "done" | "error" | "expired";
   percent: number | null;
   speed: string | null;
   eta: string | null;
@@ -423,6 +436,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  scheduleAutoDelete(jobId, jobRef);
 }
 
 router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
@@ -447,13 +461,21 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
 router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
-  if (!job || job.status !== "done" || !job.filePath) {
+  if (!job) {
+    res.status(404).json({ error: "Job not found", expired: true });
+    return;
+  }
+  if (job.status === "expired") {
+    res.status(410).json({ error: "File has expired. Please download the video again.", expired: true });
+    return;
+  }
+  if (job.status !== "done" || !job.filePath) {
     res.status(404).json({ error: "File not found or download not complete" });
     return;
   }
 
   if (!existsSync(job.filePath)) {
-    res.status(404).json({ error: "File no longer exists on server" });
+    res.status(410).json({ error: "File has expired. Please download the video again.", expired: true });
     return;
   }
 
@@ -805,6 +827,7 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
       jobRef.speed = null;
       jobRef.eta = null;
       jobRef.message = null;
+      scheduleAutoDelete(jobId, jobRef);
     })
     .catch((err) => {
       req.log.error({ err, jobId }, "Clip download failed");
