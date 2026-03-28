@@ -400,6 +400,127 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
   req.on("close", () => job.emitter.removeAllListeners());
 });
 
+// ── Plan review ───────────────────────────────────────────────────────────────
+interface ReviewJob {
+  emitter: EventEmitter;
+  status: "pending" | "running" | "done" | "error";
+  createdAt: number;
+}
+const reviewJobs = new Map<string, ReviewJob>();
+
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, job] of reviewJobs.entries()) {
+    if (job.createdAt < cutoff) reviewJobs.delete(id);
+  }
+}, 30 * 60 * 1000);
+
+router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
+  const { timeline, videoTitle, videoDuration } = req.body as {
+    timeline: TimelineSegment[];
+    videoTitle: string;
+    videoDuration: number;
+  };
+  if (!Array.isArray(timeline) || timeline.length === 0) {
+    res.status(400).json({ error: "timeline is required" });
+    return;
+  }
+  const jobId = randomUUID();
+  const job: ReviewJob = {
+    emitter: new EventEmitter(),
+    status: "pending",
+    createdAt: Date.now(),
+  };
+  reviewJobs.set(jobId, job);
+  res.json({ jobId });
+  runBhagwatReview(jobId, job, timeline, videoTitle ?? "", videoDuration ?? 0).catch(() => {});
+});
+
+router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
+  const job = reviewJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  const send = (event: string, data: object) =>
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  job.emitter.on("chunk", (d) => send("chunk", d));
+  job.emitter.on("suggestions", (d) => { send("suggestions", d); res.end(); });
+  job.emitter.on("jobError", (d) => { send("jobError", d); res.end(); });
+  req.on("close", () => job.emitter.removeAllListeners());
+});
+
+async function runBhagwatReview(
+  _jobId: string,
+  job: ReviewJob,
+  timeline: TimelineSegment[],
+  videoTitle: string,
+  videoDuration: number,
+) {
+  const emit = (event: string, data: object) => job.emitter.emit(event, data);
+  job.status = "running";
+  try {
+    if (!process.env.GEMINI_API_KEY)
+      throw new Error("GEMINI_API_KEY is not configured");
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+
+    const segmentList = timeline
+      .map(
+        (seg, i) =>
+          `[${i}] ${formatTime(seg.startSec)}–${formatTime(seg.endSec)} | ${seg.isBhajan ? "Bhajan" : "Katha"}\nDescription: ${seg.description}\nCurrent prompt: ${seg.imagePrompt}`,
+      )
+      .join("\n\n");
+
+    const prompt = `You are an expert devotional video editor reviewing an AI-generated image timeline for a Bhagwat Katha video.
+
+Video: "${videoTitle}" (${formatTime(videoDuration)})
+
+Go through each segment one by one. Think out loud: is the prompt specific enough? Does it capture exactly what the speaker is narrating? Is the style vivid and accurate? Could it be more descriptive or better matched to the story moment?
+
+${segmentList}
+
+After reviewing each segment, end your response with EXACTLY this block (no extra text after END_SUGGESTIONS):
+
+SUGGESTIONS_JSON
+[{"segIdx": 0, "reason": "brief reason", "improvedPrompt": "full improved prompt here"}, ...]
+END_SUGGESTIONS
+
+Only include segments that genuinely need improvement. If the plan is good, the array can be empty.`;
+
+    const result = await model.generateContentStream(prompt);
+
+    let fullText = "";
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullText += text;
+        emit("chunk", { text });
+      }
+    }
+
+    // Parse structured suggestions from the marker block
+    let suggestions: any[] = [];
+    const match = fullText.match(/SUGGESTIONS_JSON\s*([\s\S]*?)\s*END_SUGGESTIONS/);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        if (Array.isArray(parsed)) suggestions = parsed;
+      } catch {}
+    }
+
+    emit("suggestions", { suggestions });
+    job.status = "done";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Review failed";
+    console.error("[bhagwat/review] Error:", message);
+    emit("jobError", { message });
+    job.status = "error";
+  }
+}
+
 // ── Render job store ──────────────────────────────────────────────────────────
 interface RenderJob {
   emitter: EventEmitter;
