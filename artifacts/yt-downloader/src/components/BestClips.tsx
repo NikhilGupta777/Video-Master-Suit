@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
@@ -57,6 +57,7 @@ const STEP_META: Record<StepName, { label: string; icon: any }> = {
 };
 
 interface Props { url: string; }
+export interface BestClipsHandle { startAnalyze: () => void; }
 
 function formatDuration(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return "—";
@@ -87,9 +88,7 @@ function formatRemaining(remainingSec: number): string {
   return `~${Math.ceil(remainingSec / 60)}min left`;
 }
 
-export function BestClips({ url: urlProp }: Props) {
-  const [localUrl, setLocalUrl] = useState(urlProp);
-  const url = localUrl;
+export const BestClips = forwardRef(function BestClips({ url }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [customInstructions, setCustomInstructions] = useState("");
@@ -156,7 +155,9 @@ export function BestClips({ url: urlProp }: Props) {
     setSteps(prev => ({ ...prev, [name]: { status, message, data } }));
   };
 
-  const handleAnalyze = async () => {
+  useImperativeHandle(ref, () => ({ startAnalyze: handleAnalyze }));
+
+  async function handleAnalyze() {
     if (!url.trim() || (!isAutoMode && selectedDurations.length === 0)) return;
 
     // Close any previous SSE
@@ -314,16 +315,6 @@ export function BestClips({ url: urlProp }: Props) {
     <div className="w-full space-y-6">
       {/* Controls */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">
-        {/* URL input — shown when no URL is pre-provided (e.g. Bhagwat tab) */}
-        {!urlProp && (
-          <input
-            type="text"
-            value={localUrl}
-            onChange={e => setLocalUrl(e.target.value)}
-            placeholder="Paste YouTube URL…"
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-primary/50 text-sm"
-          />
-        )}
         <div className="flex items-center gap-3">
           <div className="bg-primary/20 p-2 rounded-xl border border-primary/30">
             <Scissors className="w-4 h-4 text-primary" />
@@ -685,4 +676,4 @@ export function BestClips({ url: urlProp }: Props) {
       </AnimatePresence>
     </div>
   );
-}
+});

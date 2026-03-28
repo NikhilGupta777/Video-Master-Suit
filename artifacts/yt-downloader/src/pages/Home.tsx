@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
-import { BestClips } from "@/components/BestClips";
+import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhagwatVideos } from "@/components/BhagwatVideos";
 
 type Mode = "download" | "clips" | "bhagwat";
@@ -20,6 +20,7 @@ type Mode = "download" | "clips" | "bhagwat";
 export default function Home() {
   const [url, setUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
+  const bestClipsRef = useRef<BestClipsHandle>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("clips");
@@ -67,6 +68,8 @@ export default function Home() {
     setSubmittedUrl(url.trim());
     if (mode === "download") {
       getInfo.mutate({ data: { url } });
+    } else if (mode === "clips") {
+      bestClipsRef.current?.startAnalyze();
     }
   };
 
@@ -370,7 +373,7 @@ export default function Home() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.3 }}
               >
-                <BestClips url={submittedUrl} />
+                <BestClips ref={bestClipsRef} url={url} />
               </motion.div>
             )}
           </AnimatePresence>
