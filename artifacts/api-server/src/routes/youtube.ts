@@ -1024,10 +1024,11 @@ setInterval(
 
 // POST: start a clip analysis job, return jobId immediately
 router.post("/youtube/clips", async (req: Request, res: Response) => {
-  const { url, durations, auto } = req.body as {
+  const { url, durations, auto, instructions } = req.body as {
     url: string;
     durations?: number[];
     auto?: boolean;
+    instructions?: string;
   };
   if (!url) {
     res.status(400).json({ error: "URL is required" });
@@ -1052,7 +1053,7 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
   res.json({ jobId });
 
   // Run analysis in background
-  runClipAnalysis(jobId, job, url, durations ?? [], req.log, auto ?? false).catch(() => {});
+  runClipAnalysis(jobId, job, url, durations ?? [], req.log, auto ?? false, instructions ?? undefined).catch(() => {});
 });
 
 // GET: SSE stream for a clip job
@@ -1110,6 +1111,7 @@ async function runClipAnalysis(
   durations: number[],
   log: any,
   autoMode: boolean = false,
+  customInstructions?: string,
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   const step = (
@@ -1363,7 +1365,7 @@ CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, 
 
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
-${videoDescription ? `Description: ${videoDescription}\n` : ""}
+${videoDescription ? `Description: ${videoDescription}\n` : ""}${customInstructions ? `\n🎯 SPECIAL FOCUS: ${customInstructions}\n` : ""}
 ${transcriptBlock}
 
 Find EVERY worthwhile clip. For each one: read the transcript carefully, find where the idea begins, read forward until you reach the natural conclusion of that idea — that is your endSec. No duration constraints, no clip count limit. Cover the full ${videoDuration ? formatTime(videoDuration) : "video"}.`;
@@ -1399,7 +1401,7 @@ CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, 
 
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
-${videoDescription ? `Description: ${videoDescription}\n` : ""}
+${videoDescription ? `Description: ${videoDescription}\n` : ""}${customInstructions ? `\n🎯 SPECIAL FOCUS: ${customInstructions}\n` : ""}
 ${transcriptBlock}
 
 Find EVERY worthwhile clip for these categories:

@@ -63,6 +63,7 @@ function formatDuration(seconds: number): string {
 export function BestClips({ url }: Props) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
+  const [customInstructions, setCustomInstructions] = useState("");
   const [clips, setClips] = useState<BestClip[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasTranscript, setHasTranscript] = useState(false);
@@ -123,8 +124,8 @@ export function BestClips({ url }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           isAutoMode
-            ? { url: url.trim(), auto: true }
-            : { url: url.trim(), durations: selectedDurations }
+            ? { url: url.trim(), auto: true, instructions: customInstructions.trim() || undefined }
+            : { url: url.trim(), durations: selectedDurations, instructions: customInstructions.trim() || undefined }
         ),
       });
       const startData = await startRes.json();
@@ -300,6 +301,25 @@ export function BestClips({ url }: Props) {
               <Wand2 className="w-3 h-3" />
               AI will decide the best duration for each clip — no presets, full creative control
             </p>
+          )}
+        </div>
+
+        {/* Custom Instructions Panel */}
+        <div className="space-y-2 pt-2">
+          <label className="text-white/60 text-sm font-medium flex items-center gap-2">
+            <FileText className="w-4 h-4" />
+            AI Instructions (Optional)
+          </label>
+          <textarea
+            value={customInstructions}
+            onChange={(e) => setCustomInstructions(e.target.value)}
+            placeholder="Tell AI what to focus on... e.g. 'Get all clips about war discussions', 'Find all Bhagwat Katha or Krishna Leela stories', 'Extract any devotional or bhakti content', 'Find every discussion about spiritual topics'"
+            className="w-full p-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-primary/50 focus:bg-white/8 transition-colors resize-none"
+            rows={3}
+            disabled={isLoading}
+          />
+          {customInstructions && (
+            <p className="text-white/40 text-xs">Instructions will be used to guide AI analysis</p>
           )}
         </div>
 
