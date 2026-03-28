@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFile
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const router: IRouter = Router();
 
@@ -497,10 +497,7 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
 
 // ─── Best Clips Feature ────────────────────────────────────────────────────
 
-const openai = new OpenAI({
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "dummy",
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
 
 interface VttCue {
   startSec: number;
@@ -675,18 +672,16 @@ Important rules:
 - Different start times for each duration
 - For longer clips, pick sections with the most complete content arc`;
 
-    req.log.info({ validDurations, hasTranscript }, "Calling OpenAI for clip analysis");
+    req.log.info({ validDurations, hasTranscript }, "Calling Gemini for clip analysis");
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-5-mini",
-      max_completion_tokens: 2048,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userContent },
-      ],
-    });
+    if (!process.env.GEMINI_API_KEY) {
+      res.status(503).json({ error: "AI not configured", details: "GEMINI_API_KEY is not set" });
+      return;
+    }
 
-    const raw = response.choices[0]?.message?.content?.trim() ?? "[]";
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+    const result = await model.generateContent(systemPrompt + "\n\n" + userContent);
+    const raw = result.response.text().trim();
     let parsed: any[];
 
     try {
