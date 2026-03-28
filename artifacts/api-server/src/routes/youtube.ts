@@ -1192,71 +1192,82 @@ async function runClipAnalysis(
     let systemPrompt: string;
     let userContent: string;
 
+    // ── Shared cut-point rules (used in both modes) ───────────────────────
+    const cutPointRules = `
+HOW TO PICK startSec AND endSec — THIS IS THE MOST IMPORTANT PART:
+- Use the transcript to read what the speaker says right up to your chosen endSec.
+- startSec: the moment the segment's topic/idea/story actually begins — after any intro filler or transition.
+- endSec: the LAST word of the speaker's complete thought, conclusion, punchline, or story beat — wherever the segment feels genuinely FINISHED.
+- NEVER cut while someone is mid-sentence, mid-explanation, mid-story, or mid-argument.
+- NEVER place endSec at a round number (e.g. exactly 60s, 180s, 300s) unless it genuinely coincides with a natural speech pause. Duration targets are guides, NOT cut points.
+- If the natural ending of a segment is 40%, 60%, or even 100% longer than the target — that is CORRECT. Content quality beats duration precision. Always.
+- Prefer ending on: a sentence-final pause, a punchline, a strong conclusion, a topic shift, applause, laughter, or a natural silence.
+- For Hindi/mixed-language content: understand the language fully and find the natural linguistic boundary in whichever language is being spoken.`;
+
     if (autoMode) {
       // ── AUTO MODE: AI freely picks durations for every clip ───────────────
-      systemPrompt = `You are an expert video content analyst specializing in viral, engaging clips. You are fluent in English and Hindi.
+      systemPrompt = `You are a world-class video editor and content analyst. You are fluent in English and Hindi.
 
-Your task: Watch the ENTIRE video and extract EVERY segment worth clipping. You have COMPLETE freedom to decide the duration of each clip — anywhere from 30 seconds to 20 minutes. Choose whatever duration makes the content feel complete and natural. Do NOT round to preset lengths like 1 min or 3 min unless that genuinely fits the content.
+Your task: Watch the ENTIRE video and extract EVERY segment worth clipping. You have COMPLETE creative freedom — pick any startSec and endSec that makes the clip feel perfectly complete from beginning to end. There are no duration presets. Each clip's length emerges entirely from where the content naturally starts and ends.
 ${coverageGuidance}
+${cutPointRules}
 
-Rules:
-1. No duration presets — each clip's length is entirely your call based on what makes it the best standalone segment
-2. No upper limit on clip count — return every worthwhile segment you find
-3. Clips must NOT overlap each other
-4. Spread clips across the FULL runtime — start, middle sections, and end
-5. Choose startSec and endSec at natural boundaries (sentence end, topic change, pause). Let the content breathe.
-6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
-7. Understand the transcript in whatever language it is (Hindi, English, mixed)
-8. Write ALL output fields (title, description, reason) in English
+Additional rules:
+1. No duration presets, no clip count cap — return every worthwhile segment
+2. Clips must NOT overlap each other
+3. Spread clips across the FULL runtime — start, every middle section, and end
+4. targetDuration = Math.round(endSec - startSec) — just reflect the actual clip length you chose
+5. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
+6. Write ALL output fields (title, description, reason) in English
 
 CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no extra text:
-[{"targetDuration": <actual clip length in seconds as integer>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence: why this specific duration is perfect for this segment>"}]`;
+[{"targetDuration": <endSec minus startSec rounded to nearest second>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence: what makes this a natural, complete standalone clip>"}]`;
 
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
 ${transcriptBlock}
 
-Find EVERY worthwhile clip in this video. You decide each clip's duration — choose whatever length makes it the best standalone piece of content. No duration constraints, no clip count limit. Scan the whole video from beginning to end, covering all ${videoDuration ? formatTime(videoDuration) : "of it"}.`;
+Find EVERY worthwhile clip. For each one: read the transcript carefully, find where the idea begins, read forward until you reach the natural conclusion of that idea — that is your endSec. No duration constraints, no clip count limit. Cover the full ${videoDuration ? formatTime(videoDuration) : "video"}.`;
 
     } else {
       // ── MANUAL MODE: fixed duration categories chosen by user ─────────────
       const durationDescList = validDurations
         .map((d) => {
           if (d === 9999) {
-            return `- TARGET >5 minutes (targetDuration=9999 — you decide the exact length, must be at least 300s, NO upper cap — could be 6, 8, 12, 20, 30+ minutes, whatever serves the content best)`;
+            return `- CATEGORY ">5 min" (targetDuration=9999): find clips longer than 5 minutes. You decide each clip's exact length — 6 min, 10 min, 20 min, whatever the content demands. No upper cap.`;
           }
-          return `- TARGET ~${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (targetDuration=${d}s — pick actual start/end at natural boundaries, ±30% ok)`;
+          const label = durationLabels[d] ?? `${Math.round(d / 60)} minutes`;
+          return `- CATEGORY "${label}" (targetDuration=${d}s): find clips roughly around ${label} long. The target is a loose guide — the actual clip must end at a natural speech/scene boundary even if that makes it noticeably shorter or longer than ${label}.`;
         })
         .join("\n");
 
-      systemPrompt = `You are an expert video content analyst specializing in viral, engaging clip segments. You are fluent in English and Hindi.
+      systemPrompt = `You are a world-class video editor and content analyst. You are fluent in English and Hindi.
 
-Your task: Scan the ENTIRE video timeline from 0s to ${videoDuration || 99999}s and identify EVERY genuinely engaging segment for each requested clip duration category. There is NO upper limit on clips — return every worthwhile segment you find. A 30-minute video can have 20+ quality clips. A 2-hour video can have 60+ clips.
+Your task: Scan the ENTIRE video timeline from 0s to ${videoDuration || 99999}s and identify EVERY genuinely engaging segment for each requested duration category. There is NO upper limit on clip count — return every worthwhile segment you find.
 ${coverageGuidance}
+${cutPointRules}
 
-Rules:
-1. Find ALL non-overlapping segments worth watching for each duration — zero artificial cap, be exhaustive
-2. Segments of the same targetDuration must NOT overlap with each other (across different targetDurations overlapping is fine)
-3. MANDATORY: spread clips across the ENTIRE runtime — start, every middle section, and end. Do not stop after the first hour of a long video.
-4. Sort clips by quality/engagement score within each duration (best first)
-5. Choose BOTH startSec AND endSec at natural speech/scene boundaries. Let content dictate actual length within ±30% of target.
-6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
-7. Understand the transcript in whatever language it is (Hindi, English, mixed, etc.)
-8. Write ALL output fields (title, description, reason) in English
+Additional rules:
+1. Find ALL non-overlapping segments per category — zero artificial cap
+2. Segments of the same targetDuration must NOT overlap (across different targetDurations, overlap is fine)
+3. Spread clips across the ENTIRE runtime — don't cluster at the beginning
+4. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
+5. Understand the transcript in whatever language it is (Hindi, English, mixed)
+6. Write ALL output fields (title, description, reason) in English
 
-CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no explanation text:
-[{"targetDuration": <integer seconds from the list>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
+CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no explanation:
+[{"targetDuration": <integer category value from the list>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
 
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
 ${transcriptBlock}
 
-Find EVERY worthwhile clip for these duration categories:
+Find EVERY worthwhile clip for these categories:
 ${durationDescList}
 
-Scan the WHOLE video from beginning to end. Return every segment that makes a great standalone clip. No upper limit — if 50 clips exist, return 50. Distribute findings proportionally across the entire ${videoDuration ? formatTime(videoDuration) : "video"} runtime.`;
+For each clip: read the transcript to find where the idea begins (startSec) and where the speaker's complete thought finishes (endSec). The transcript is your source of truth for cut points — not the duration target. Scan the WHOLE video. No clip count limit.`;
     }
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
