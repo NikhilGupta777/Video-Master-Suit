@@ -54,6 +54,13 @@ const STEP_META: Record<StepName, { label: string; icon: any }> = {
 
 interface Props { url: string; }
 
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds);
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+}
+
 export function BestClips({ url }: Props) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60, 180, 300, 600]);
   const [clips, setClips] = useState<BestClip[]>([]);
@@ -444,6 +451,8 @@ export function BestClips({ url }: Props) {
                                   <span className="flex items-center gap-1"><Play className="w-3 h-3" />{clip.startFormatted}</span>
                                   <span>→</span>
                                   <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{clip.endFormatted}</span>
+                                  <span className="text-white/30">·</span>
+                                  <span className="text-white/40">{formatDuration(clip.endSec - clip.startSec)}</span>
                                 </div>
                                 {dl.status === "downloading" && dl.message && (
                                   <p className="text-primary/70 text-xs mt-1 font-medium">{dl.message}</p>

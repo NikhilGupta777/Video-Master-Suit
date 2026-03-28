@@ -1091,37 +1091,36 @@ async function runClipAnalysis(
     const durationDescList = validDurations
       .map(
         (d) =>
-          `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`,
+          `- TARGET ~${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (targetDuration=${d}s — pick actual start/end at natural boundaries, ±30% ok)`,
       )
       .join("\n");
 
     const systemPrompt = `You are an expert video content analyst specializing in viral, engaging clip segments. You are fluent in English and Hindi.
 
-Your task: Scan the ENTIRE video and identify EVERY genuinely engaging segment for each requested clip duration. There is no minimum or maximum limit — return as many clips as you find worthwhile. A 30-minute video might have 15+ quality 1-minute clips. Be comprehensive and thorough.
+Your task: Scan the ENTIRE video and identify EVERY genuinely engaging segment for each requested clip duration category. There is no minimum or maximum limit — return as many clips as you find worthwhile. A 30-minute video might have 15+ quality 1-minute clips. Be comprehensive and thorough.
 
 Rules:
 1. Find ALL non-overlapping segments worth watching for each duration — no artificial cap
-2. Segments of the same duration must NOT overlap with each other
+2. Segments of the same targetDuration must NOT overlap with each other
 3. Cover different parts of the video — spread clips across the full runtime, don't cluster at the start
 4. Sort clips by quality/engagement score within each duration (best first)
-5. endSec = startSec + durationSec exactly
-6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}
-7. Start at natural speech/scene boundaries when transcript is available
-8. Understand the transcript in whatever language it's in (Hindi, English, or mixed)
-9. Write ALL output fields (title, description, reason) in English
+5. Choose BOTH startSec AND endSec at natural speech/scene boundaries (sentence end, pause, topic change). Do NOT force a fixed length — let the content dictate the actual clip length within ±30% of the target (e.g. for a 60s target, clip can be 42–78 seconds; for 180s, can be 126–234s)
+6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec
+7. Understand the transcript in whatever language it's in (Hindi, English, or mixed)
+8. Write ALL output fields (title, description, reason) in English
 
 Respond with ONLY a valid JSON array (no markdown, no extra text):
-[{"durationSec": <number>, "startSec": <number>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
+[{"targetDuration": <target seconds from the list>, "startSec": <number>, "endSec": <number>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
 
     const userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 100000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
+${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 80000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
 
-Find every worthwhile clip for these durations:
+Find every worthwhile clip for these duration categories:
 ${durationDescList}
 
-Be exhaustive — scan the whole video. Return every segment that would make a great standalone clip. No limit.`;
+Be exhaustive — scan the whole video. Return every segment that would make a great standalone clip. No limit. Pick natural start/end times — do NOT round to exact minutes.`;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
     const result = await model.generateContent(
@@ -1146,24 +1145,30 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
     }
 
     const clips: BestClip[] = parsed
-      .filter(
-        (c: any) =>
-          typeof c.startSec === "number" && typeof c.durationSec === "number",
-      )
+      .filter((c: any) => {
+        const hasSecs = typeof c.startSec === "number" && typeof c.endSec === "number";
+        const hasTarget = typeof c.targetDuration === "number";
+        // Also accept legacy durationSec format as fallback
+        return hasSecs && (hasTarget || typeof c.durationSec === "number");
+      })
       .map((c: any): BestClip => {
-        const durSec = c.durationSec;
+        const targetDur: number = c.targetDuration ?? c.durationSec;
         const startSec = Math.max(0, Math.round(c.startSec));
-        const endSec = Math.min(videoDuration || 99999, startSec + durSec);
+        // Use AI's actual endSec — just clamp to video length
+        const endSec = Math.min(
+          videoDuration || 99999,
+          Math.max(startSec + 1, Math.round(c.endSec ?? startSec + targetDur)),
+        );
         return {
           durationLabel:
-            durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`,
-          durationSec: durSec,
+            durationLabels[targetDur] ?? `~${Math.round(targetDur / 60)} min`,
+          durationSec: targetDur,
           startSec,
           endSec,
           startFormatted: formatTime(startSec),
           endFormatted: formatTime(endSec),
           title:
-            c.title ?? `Best ${durationLabels[durSec] ?? durSec + "s"} clip`,
+            c.title ?? `Best ${durationLabels[targetDur] ?? targetDur + "s"} clip`,
           description: c.description ?? "",
           reason: c.reason ?? "",
         };
