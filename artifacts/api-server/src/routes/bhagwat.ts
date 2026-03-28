@@ -870,7 +870,9 @@ Plan the full image timeline for this video. Write specific image prompts for ea
               description: (s.description ?? "").slice(0, 150),
               imagePrompt: (s.imagePrompt ?? "").slice(0, 600),
             }),
-          );
+          )
+          // Second pass: drop any segment where clamping made endSec ≤ startSec
+          .filter((s) => s.endSec > s.startSec + 1);
       }
     } catch {
       throw new Error("AI returned invalid JSON — please try again");
@@ -896,19 +898,32 @@ Plan the full image timeline for this video. Write specific image prompts for ea
       const filled: TimelineSegment[] = [timeline[0]];
       for (let i = 1; i < timeline.length; i++) {
         const prev = filled[filled.length - 1];
-        if (timeline[i].startSec > prev.endSec) {
+        // Clip overlapping segment so it starts where the previous one ended
+        const seg = timeline[i].startSec < prev.endSec
+          ? { ...timeline[i], startSec: prev.endSec }
+          : timeline[i];
+        // Skip degenerate segments produced by clipping
+        if (seg.endSec <= seg.startSec + 1) continue;
+        if (seg.startSec > prev.endSec) {
+          // Fill the gap
           filled.push({
             startSec: prev.endSec,
-            endSec: timeline[i].startSec,
+            endSec: seg.startSec,
             isBhajan: false,
             imageChangeEvery: 10,
             description: "Continuation",
-            imagePrompt: prev.imagePrompt, // reuse previous scene image
+            imagePrompt: prev.imagePrompt,
           });
         }
-        filled.push(timeline[i]);
+        filled.push(seg);
       }
-      filled[filled.length - 1].endSec = videoDuration;
+      // Extend final segment to cover the full video (guard against startSec edge case)
+      const last = filled[filled.length - 1];
+      if (last.startSec < videoDuration) {
+        last.endSec = videoDuration;
+      } else {
+        filled.pop(); // last segment starts beyond video end — discard
+      }
       timeline = filled;
     }
 
