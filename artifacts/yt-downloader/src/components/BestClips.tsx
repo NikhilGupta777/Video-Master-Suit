@@ -88,10 +88,8 @@ export function BestClips({ url }: Props) {
     }));
   }, []);
 
-  const toggleDuration = (value: number) => {
-    setSelectedDurations(prev =>
-      prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]
-    );
+  const selectDuration = (value: number) => {
+    setSelectedDurations([value]);
   };
 
   const resetSteps = () => setSteps({
@@ -283,9 +281,7 @@ export function BestClips({ url }: Props) {
                 key={opt.value}
                 onClick={() => {
                   setIsAutoMode(false);
-                  setSelectedDurations(prev =>
-                    prev.includes(opt.value) ? prev.filter(v => v !== opt.value) : [...prev, opt.value]
-                  );
+                  selectDuration(opt.value);
                 }}
                 className={cn(
                   "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200",
