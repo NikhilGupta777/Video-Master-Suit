@@ -982,7 +982,7 @@ async function runClipAnalysis(
 
   job.status = "running";
 
-  const clipDurations = durations.length > 0 ? durations : [60, 180, 300, 600];
+  const clipDurations = durations.length > 0 ? durations : [60, 180, 300];
   const tmpId = randomUUID();
   const subDir = join(DOWNLOAD_DIR, `subs_${tmpId}`);
 
@@ -990,7 +990,7 @@ async function runClipAnalysis(
     60: "1 minute",
     180: "3 minutes",
     300: "5 minutes",
-    600: "10 minutes",
+    9999: "> 5 minutes (AI picks exact length)",
   };
 
   try {
@@ -1151,9 +1151,10 @@ async function runClipAnalysis(
     }
 
     const hasTranscript = transcript.length > 50;
-    const validDurations = clipDurations.filter(
-      (d) => !videoDuration || d < videoDuration,
-    );
+    const validDurations = clipDurations.filter((d) => {
+      if (d === 9999) return !videoDuration || videoDuration > 300; // keep >5min if video is long enough
+      return !videoDuration || d < videoDuration;
+    });
 
     // ── Step 3: AI analysis ───────────────────────────────────────────────
     step(
@@ -1221,10 +1222,12 @@ Find EVERY worthwhile clip in this video. You decide each clip's duration — ch
     } else {
       // ── MANUAL MODE: fixed duration categories chosen by user ─────────────
       const durationDescList = validDurations
-        .map(
-          (d) =>
-            `- TARGET ~${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (targetDuration=${d}s — pick actual start/end at natural boundaries, ±30% ok)`,
-        )
+        .map((d) => {
+          if (d === 9999) {
+            return `- TARGET >5 minutes (targetDuration=9999 — you decide the exact length, must be at least 300s, NO upper cap — could be 6, 8, 12, 20, 30+ minutes, whatever serves the content best)`;
+          }
+          return `- TARGET ~${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (targetDuration=${d}s — pick actual start/end at natural boundaries, ±30% ok)`;
+        })
         .join("\n");
 
       systemPrompt = `You are an expert video content analyst specializing in viral, engaging clip segments. You are fluent in English and Hindi.
@@ -1288,14 +1291,18 @@ Scan the WHOLE video from beginning to end. Return every segment that makes a gr
           parseFloat(c.targetDuration ?? c.durationSec ?? c.duration),
         );
         const startSec = Math.max(0, Math.round(parseFloat(c.startSec)));
-        // Use AI's actual endSec — just clamp to video length
         const endSec = Math.min(
           videoDuration || 99999,
           Math.max(startSec + 1, Math.round(parseFloat(c.endSec) ?? startSec + targetDur)),
         );
+        const actualMins = Math.round((endSec - startSec) / 60);
+        // For the open-ended >5 min category, use a friendly label with actual length
+        const durationLabel =
+          targetDur === 9999
+            ? `> 5 min (${actualMins}m)`
+            : (durationLabels[targetDur] ?? `~${Math.round(targetDur / 60)} min`);
         return {
-          durationLabel:
-            durationLabels[targetDur] ?? `~${Math.round(targetDur / 60)} min`,
+          durationLabel,
           durationSec: targetDur,
           startSec,
           endSec,

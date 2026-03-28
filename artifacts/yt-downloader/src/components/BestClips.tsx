@@ -26,7 +26,7 @@ const DURATION_OPTIONS = [
   { label: "1 min",  value: 60,  color: "from-blue-500/30 to-blue-600/10",    badge: "text-blue-300 border-blue-500/30 bg-blue-500/10",    accent: "border-blue-500/20 bg-blue-500/5"    },
   { label: "3 min",  value: 180, color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
   { label: "5 min",  value: 300, color: "from-emerald-500/30 to-emerald-600/10",badge:"text-emerald-300 border-emerald-500/30 bg-emerald-500/10",accent:"border-emerald-500/20 bg-emerald-500/5"},
-  { label: "10 min", value: 600, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
+  { label: "> 5 min", value: 9999, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
 ];
 
 type StepStatus = "idle" | "running" | "done" | "warn" | "error";
