@@ -647,7 +647,7 @@ WHAT YOU ARE EDITING:
 - Your job: plan a sequence of images that visually brings the narration to life.
 
 HOW TO THINK ABOUT EACH SEGMENT:
-1. STORY NARRATION (katha/leela): Break into logical story beats. Each beat gets ONE specific image prompt that captures that exact moment of the story. Imagine you are choosing from millions of devotional paintings which one would fit this narration best. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, 16th century devotional painting style". Images should change every 8–15 seconds for katha narration.
+1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of 8–12 seconds each. CRITICAL RULE: NEVER make a single katha segment longer than 12 seconds. If the speaker narrates a section for 30 seconds, that must be 3 SEPARATE segments (~10s each) with 3 DIFFERENT image prompts, each showing a distinct moment of the story progressing. More segments = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, 16th century devotional painting style". Set imageChangeEvery to match the segment duration (8–12).
 
 2. BHAJAN / KIRTAN (when speaker sings a devotional song or plays music): Detect this by repeated devotional phrases, "Ram Hare Krishn Hare", "Madhab Madhab", "Jai Shri Ram", "Govind Bolo", song lyrics, musical patterns. For bhajans: use calm meditative devotional imagery — NOT the story scenes, but peaceful deity imagery (eg Radha krishna, Sita Ram or which fits the best to the bhajan,. etc.). Change images every 25–40 seconds (bhajans have a slow, meditative rhythm). Mark isBhajan: true.
 
@@ -718,10 +718,9 @@ Plan the full image timeline for this video. Write specific image prompts for ea
               startSec: Math.max(0, Math.round(s.startSec)),
               endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
               isBhajan: s.isBhajan === true,
-              imageChangeEvery: Math.max(
-                5,
-                Math.min(60, Math.round(s.imageChangeEvery ?? 12)),
-              ),
+              imageChangeEvery: s.isBhajan === true
+                ? Math.max(20, Math.min(40, Math.round(s.imageChangeEvery ?? 30)))
+                : Math.max(8, Math.min(12, Math.round(s.imageChangeEvery ?? 10))),
               description: (s.description ?? "").slice(0, 150),
               imagePrompt: (s.imagePrompt ?? "").slice(0, 600),
             }),
@@ -817,64 +816,56 @@ async function runBhagwatRender(
     if (!process.env.GEMINI_API_KEY)
       throw new Error("GEMINI_API_KEY is not configured");
 
-    // ── 1. Download audio ─────────────────────────────────────────────────────
+    // ── 1+2. Download audio AND generate images in parallel ───────────────────
     emit("progress", {
       percent: 3,
-      message: "Downloading audio from YouTube…",
+      message: `Downloading audio & generating ${timeline.length} images in parallel…`,
     });
 
-    let ytdlpError = "";
-    try {
-      await runYtDlp([
-        "-f",
-        "bestaudio/best",
-        "--no-playlist",
-        "--no-warnings",
-        "--no-check-certificates",
-        "-o",
-        `${audioPath}.%(ext)s`,
-        url,
-      ]);
-    } catch (err) {
-      ytdlpError = err instanceof Error ? err.message : String(err);
-      console.error(
-        "[bhagwat/render] yt-dlp audio download error:",
-        ytdlpError,
-      );
-    }
-
-    const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
-      f.startsWith(basename(audioPath)),
-    );
-    const audioFile =
-      audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
-    if (!audioFile || !existsSync(audioFile)) {
-      throw new Error(
-        ytdlpError
-          ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
-          : "Failed to download audio from YouTube — please check the URL and try again",
-      );
-    }
-
-    // ── 2. Generate images for all segments ───────────────────────────────────
-    emit("progress", {
-      percent: 8,
-      message: `Generating ${timeline.length} scene images with Gemini…`,
-    });
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-    const imagePaths = await generateAllSegmentImages(
-      genAI,
-      timeline,
-      imgDir,
-      (done, total, desc) => {
+    const audioDownloadPromise = (async (): Promise<string> => {
+      let ytdlpError = "";
+      try {
+        await runYtDlp([
+          "-f",
+          "bestaudio/best",
+          "--no-playlist",
+          "--no-warnings",
+          "--no-check-certificates",
+          "-o",
+          `${audioPath}.%(ext)s`,
+          url,
+        ]);
+      } catch (err) {
+        ytdlpError = err instanceof Error ? err.message : String(err);
+        console.error("[bhagwat/render] yt-dlp audio download error:", ytdlpError);
+      }
+      const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
+        f.startsWith(basename(audioPath)),
+      );
+      const resolved =
+        audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
+      if (!resolved || !existsSync(resolved)) {
+        throw new Error(
+          ytdlpError
+            ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
+            : "Failed to download audio from YouTube — please check the URL and try again",
+        );
+      }
+      return resolved;
+    })();
+
+    const [audioFile, imagePaths] = await Promise.all([
+      audioDownloadPromise,
+      generateAllSegmentImages(genAI, timeline, imgDir, (done, total, desc) => {
         const pct = 8 + Math.round((done / total) * 52); // 8% → 60%
         emit("progress", {
           percent: pct,
           message: `Generating image ${done}/${total}: "${desc.slice(0, 50)}"…`,
         });
-      },
-    );
+      }),
+    ]);
 
     const totalGenerated = imagePaths
       .flat()
@@ -893,7 +884,6 @@ async function runBhagwatRender(
       dur: number;
     }
     const clips: Clip[] = [];
-    const usedIndexPerSeg = new Array(timeline.length).fill(0);
 
     for (let i = 0; i < timeline.length; i++) {
       const seg = timeline[i];
@@ -902,14 +892,7 @@ async function runBhagwatRender(
       const pool = imagePaths[i].filter((p) => p && existsSync(p));
       if (pool.length === 0) continue;
 
-      let elapsed = 0;
-      while (elapsed < segDur - 0.1) {
-        const dur = Math.min(seg.imageChangeEvery, segDur - elapsed);
-        const imgPath = pool[usedIndexPerSeg[i] % pool.length];
-        clips.push({ imgPath, dur });
-        usedIndexPerSeg[i]++;
-        elapsed += dur;
-      }
+      clips.push({ imgPath: pool[0], dur: segDur });
     }
 
     if (clips.length === 0)
@@ -925,7 +908,8 @@ async function runBhagwatRender(
     job.filename = `bhagwat_${tmpId.slice(0, 6)}.mp4`;
 
     // Clamp fade so it never exceeds 80% of the shortest clip
-    const FADE_DUR = Math.min(0.7, Math.min(...clips.map((c) => c.dur)) * 0.8);
+    const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
+    const FIRST_FADEIN = 3.0; // seconds — first image fades in from black
 
     const SCALE =
       "scale=1920:1080:force_original_aspect_ratio=decrease," +
@@ -935,32 +919,14 @@ async function runBhagwatRender(
     const ffArgs: string[] = [];
 
     if (clips.length === 1) {
-      // Single clip — no xfade needed, simple path
-      ffArgs.push(
-        "-loop",
-        "1",
-        "-t",
-        clips[0].dur.toFixed(3),
-        "-i",
-        clips[0].imgPath,
-      );
+      // Single clip — no xfade, just 3s fade-in from black
+      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
       ffArgs.push("-i", audioFile);
       ffArgs.push(
-        "-vf",
-        SCALE,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "18",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-shortest",
-        "-y",
-        outputPath,
+        "-vf", `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest", "-y", outputPath,
       );
     } else {
       // Multiple clips — chain xfade between each consecutive pair
@@ -986,15 +952,12 @@ async function runBhagwatRender(
       ffArgs.push("-i", audioFile);
 
       // Build filter_complex:
-      // 1. Scale each input: [0]scale...[v0]; [1]scale...[v1]; ...
-      // 2. Chain xfade:
-      //    [v0][v1]xfade=fade:dur:offset=(d0-F)[x1]
-      //    [x1][v2]xfade=fade:dur:offset=(d0+d1-F)[x2]
-      //    ...
-      //    [x{N-2}][v{N-1}]xfade=...[vout]
+      // 1. Scale each input; first image also gets 3s fade-in from black
+      // 2. Chain fadeblack xfade between all clips
       const filterParts: string[] = [];
 
-      for (let i = 0; i < clips.length; i++) {
+      filterParts.push(`[0]${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}[v0]`);
+      for (let i = 1; i < clips.length; i++) {
         filterParts.push(`[${i}]${SCALE}[v${i}]`);
       }
 
@@ -1005,7 +968,7 @@ async function runBhagwatRender(
         const offset = Math.max(0, cumDur - FADE_DUR);
         const outLabel = i === clips.length - 1 ? "vout" : `x${i}`;
         filterParts.push(
-          `[${prevLabel}][v${i}]xfade=transition=fade:duration=${FADE_DUR.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`,
+          `[${prevLabel}][v${i}]xfade=transition=fadeblack:duration=${FADE_DUR.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`,
         );
         prevLabel = outLabel;
       }
