@@ -59,7 +59,9 @@ function getImageGenClient(): GoogleGenAI {
       httpOptions: { apiVersion: "", baseUrl },
     });
   }
-  throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in secrets.");
+  throw new Error(
+    "No Gemini API key configured. Set GEMINI_API_KEY in secrets.",
+  );
 }
 
 async function generateImage(
@@ -70,7 +72,7 @@ async function generateImage(
   const imageAI = getImageGenClient();
 
   const sanitizedPrompt = prompt.slice(0, 500);
-  const fullPrompt = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for Hindu devotional video content with a spiritual and reverential tone.
+  const fullPrompt = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for  video content with a spiritual and reverential tone.
 The image should visually represent: ${sanitizedPrompt}
 
 CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
@@ -102,10 +104,7 @@ No subtitles, logos, watermarks, UI elements`;
   if (!imagePart?.inlineData?.data)
     throw new Error("Gemini returned no image data");
 
-  writeFileSync(
-    outputPath,
-    Buffer.from(imagePart.inlineData.data, "base64"),
-  );
+  writeFileSync(outputPath, Buffer.from(imagePart.inlineData.data, "base64"));
 }
 
 // Generate images for all segments — 2 per katha segment, 1 per bhajan segment
@@ -155,7 +154,10 @@ async function generateAllSegmentImages(
           imagePaths[task.segIdx].push(task.path);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[bhagwat/render] Image gen failed (seg ${task.segIdx}/${task.imgIdx}):`, errMsg);
+          console.error(
+            `[bhagwat/render] Image gen failed (seg ${task.segIdx}/${task.imgIdx}):`,
+            errMsg,
+          );
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. Devotional Indian painting style.`;
           try {
@@ -163,7 +165,10 @@ async function generateAllSegmentImages(
             imagePaths[task.segIdx].push(task.path);
           } catch (err2) {
             const errMsg2 = err2 instanceof Error ? err2.message : String(err2);
-            console.error(`[bhagwat/render] Fallback image gen also failed (seg ${task.segIdx}/${task.imgIdx}):`, errMsg2);
+            console.error(
+              `[bhagwat/render] Fallback image gen also failed (seg ${task.segIdx}/${task.imgIdx}):`,
+              errMsg2,
+            );
             // Skip this image slot — will use neighbor's image
           }
         }
@@ -822,16 +827,21 @@ async function runBhagwatRender(
     let ytdlpError = "";
     try {
       await runYtDlp([
-        "-f", "bestaudio/best",
+        "-f",
+        "bestaudio/best",
         "--no-playlist",
         "--no-warnings",
         "--no-check-certificates",
-        "-o", `${audioPath}.%(ext)s`,
+        "-o",
+        `${audioPath}.%(ext)s`,
         url,
       ]);
     } catch (err) {
       ytdlpError = err instanceof Error ? err.message : String(err);
-      console.error("[bhagwat/render] yt-dlp audio download error:", ytdlpError);
+      console.error(
+        "[bhagwat/render] yt-dlp audio download error:",
+        ytdlpError,
+      );
     }
 
     const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>

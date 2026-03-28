@@ -537,8 +537,12 @@ export function BhagwatVideos() {
         </button>
       </div>
 
-      {tab === "editor" && <BhagwatEditor BASE={BASE} />}
-      {tab === "clips" && <BestClips url="" />}
+      <div className={tab === "editor" ? undefined : "hidden"}>
+        <BhagwatEditor BASE={BASE} />
+      </div>
+      <div className={tab === "clips" ? undefined : "hidden"}>
+        <BestClips url="" />
+      </div>
     </motion.div>
   );
 }
