@@ -1,31 +1,15 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { Innertube } from "youtubei.js";
-import { Platform } from "youtubei.js/dist/src/utils/Utils.js";
-import vm from "vm";
 import { spawn } from "child_process";
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, statSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 
-Platform.load({
-  ...Platform.shim,
-  eval: (data: { output: string }, env: Record<string, unknown>) => {
-    return vm.runInNewContext(data.output, { ...env });
-  },
-});
-
 const router: IRouter = Router();
 
-let yt: Innertube | null = null;
-async function getYt(): Promise<Innertube> {
-  if (!yt) {
-    yt = await Innertube.create({
-      cache: undefined,
-      generate_session_locally: true,
-    });
-  }
-  return yt;
+const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
+if (!existsSync(DOWNLOAD_DIR)) {
+  mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
 interface VideoFormatOut {
@@ -59,153 +43,21 @@ interface DownloadJob {
 
 const jobs = new Map<string, DownloadJob>();
 
-const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
-if (!existsSync(DOWNLOAD_DIR)) {
-  mkdirSync(DOWNLOAD_DIR, { recursive: true });
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return bytes.toFixed(0) + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-}
-
-function formatSeconds(secs: number): string {
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
-}
-
-function parseCodecsFromMime(mimeType: string): { ext: string; vcodec: string | null; acodec: string | null } {
-  const mimeMatch = mimeType.match(/^(video|audio)\/([^;]+)/);
-  const codecsMatch = mimeType.match(/codecs="([^"]+)"/);
-  const container = mimeMatch?.[2] ?? "mp4";
-  const codecs = codecsMatch?.[1]?.split(",").map(c => c.trim()) ?? [];
-  const mediaType = mimeMatch?.[1] ?? "video";
-  let ext = container === "webm" ? "webm" : "mp4";
-  let vcodec: string | null = null;
-  let acodec: string | null = null;
-  if (mediaType === "video") {
-    vcodec = codecs[0] ?? null;
-    acodec = codecs[1] ?? null;
-  } else {
-    acodec = codecs[0] ?? null;
-    ext = "m4a";
-  }
-  return { ext, vcodec, acodec };
-}
-
-function buildFormats(streamingData: any): VideoFormatOut[] {
-  const allFormats: any[] = [
-    ...(streamingData?.adaptive_formats ?? []),
-    ...(streamingData?.formats ?? []),
-  ];
-
-  const qualityOrder: Record<string, number> = {
-    "2160p": 10, "1440p": 9, "1080p": 8, "720p": 7,
-    "480p": 6, "360p": 5, "240p": 4, "144p": 3,
-  };
-
-  const videoAudioFormats: VideoFormatOut[] = [];
-  const videoOnlyFormats: VideoFormatOut[] = [];
-  const audioOnlyFormats: VideoFormatOut[] = [];
-
-  const bestVaByQuality = new Map<string, any>();
-  const bestVByQuality = new Map<string, any>();
-  let bestAudioFmt: any = null;
-
-  for (const fmt of allFormats) {
-    const hasVideo = !!fmt.has_video;
-    const hasAudio = !!fmt.has_audio;
-    const qualityLabel: string = fmt.quality_label ?? fmt.quality ?? "unknown";
-
-    if (hasVideo && hasAudio) {
-      const existing = bestVaByQuality.get(qualityLabel);
-      if (!existing || (fmt.average_bitrate ?? 0) > (existing.average_bitrate ?? 0)) {
-        bestVaByQuality.set(qualityLabel, fmt);
-      }
-    } else if (hasVideo) {
-      const existing = bestVByQuality.get(qualityLabel);
-      if (!existing || (fmt.average_bitrate ?? 0) > (existing.average_bitrate ?? 0)) {
-        bestVByQuality.set(qualityLabel, fmt);
-      }
-    } else if (hasAudio) {
-      const mimeType = fmt.mime_type ?? "";
-      if (mimeType.includes("mp4") || mimeType.includes("m4a")) {
-        if (!bestAudioFmt || (fmt.average_bitrate ?? 0) > (bestAudioFmt.average_bitrate ?? 0)) {
-          bestAudioFmt = fmt;
-        }
-      } else if (!bestAudioFmt) {
-        bestAudioFmt = fmt;
-      }
-    }
-  }
-
-  for (const [qualityLabel, fmt] of bestVaByQuality.entries()) {
-    const { ext, vcodec, acodec } = parseCodecsFromMime(fmt.mime_type ?? "video/mp4");
-    videoAudioFormats.push({
-      formatId: String(fmt.itag),
-      ext,
-      resolution: fmt.width && fmt.height ? `${fmt.width}x${fmt.height}` : qualityLabel,
-      fps: fmt.fps ?? null,
-      filesize: fmt.content_length ?? null,
-      vcodec,
-      acodec,
-      quality: qualityLabel,
-      label: `${qualityLabel} (video+audio)`,
-      hasVideo: true,
-      hasAudio: true,
+function runYtDlp(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
-  }
-
-  for (const [qualityLabel, fmt] of bestVByQuality.entries()) {
-    const { vcodec } = parseCodecsFromMime(fmt.mime_type ?? "video/mp4");
-    videoOnlyFormats.push({
-      formatId: `merge:${fmt.itag}`,
-      ext: "mp4",
-      resolution: fmt.width && fmt.height ? `${fmt.width}x${fmt.height}` : qualityLabel,
-      fps: fmt.fps ?? null,
-      filesize: fmt.content_length ?? null,
-      vcodec,
-      acodec: "aac",
-      quality: qualityLabel,
-      label: `${qualityLabel} (merged with best audio)`,
-      hasVideo: true,
-      hasAudio: true,
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`));
     });
-  }
-
-  if (bestAudioFmt) {
-    const bitrateKbps = bestAudioFmt.average_bitrate
-      ? `${Math.round(bestAudioFmt.average_bitrate / 1000)}kbps`
-      : "128kbps";
-    audioOnlyFormats.push({
-      formatId: `audio:${bestAudioFmt.itag}`,
-      ext: "mp3",
-      resolution: "audio only",
-      fps: null,
-      filesize: bestAudioFmt.content_length ?? null,
-      vcodec: null,
-      acodec: parseCodecsFromMime(bestAudioFmt.mime_type ?? "audio/mp4").acodec,
-      quality: bitrateKbps,
-      label: `Audio Only (MP3 ${bitrateKbps})`,
-      hasVideo: false,
-      hasAudio: true,
-    });
-  }
-
-  const sortFn = (a: VideoFormatOut, b: VideoFormatOut) => {
-    const aOrder = qualityOrder[a.quality] ?? 0;
-    const bOrder = qualityOrder[b.quality] ?? 0;
-    return bOrder - aOrder;
-  };
-
-  return [
-    ...videoAudioFormats.sort(sortFn),
-    ...videoOnlyFormats.sort(sortFn),
-    ...audioOnlyFormats,
-  ];
+    proc.on("error", (err) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
+  });
 }
 
 function extractVideoId(url: string): string | null {
@@ -220,6 +72,106 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
+function buildFormats(ytFormats: any[]): VideoFormatOut[] {
+  const qualityOrder: Record<number, number> = {
+    2160: 10, 1440: 9, 1080: 8, 720: 7, 480: 6, 360: 5, 240: 4, 144: 3,
+  };
+
+  const videoAudioFormats: VideoFormatOut[] = [];
+  const mergeFormats: VideoFormatOut[] = [];
+  let audioFormat: VideoFormatOut | null = null;
+
+  const seenHeights = new Set<number>();
+  const seenCombined = new Set<number>();
+
+  // Find best audio itag for merging
+  const bestAudioFmt = ytFormats
+    .filter((f) => f.acodec !== "none" && f.vcodec === "none" && f.ext === "m4a")
+    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+    ?? ytFormats.find((f) => f.acodec !== "none" && f.vcodec === "none");
+
+  for (const fmt of ytFormats) {
+    const hasVideo = fmt.vcodec !== "none" && !!fmt.vcodec;
+    const hasAudio = fmt.acodec !== "none" && !!fmt.acodec;
+    const height: number | null = fmt.height ?? null;
+
+    if (hasVideo && hasAudio) {
+      // Combined format (e.g., itag 18, 22)
+      if (height && seenCombined.has(height)) continue;
+      if (height) seenCombined.add(height);
+
+      const qual = height ? `${height}p` : (fmt.format_note ?? "unknown");
+      videoAudioFormats.push({
+        formatId: fmt.format_id,
+        ext: fmt.ext ?? "mp4",
+        resolution: height ? `${fmt.width ?? "?"}x${height}` : qual,
+        fps: fmt.fps ?? null,
+        filesize: fmt.filesize ?? fmt.filesize_approx ?? null,
+        vcodec: fmt.vcodec ?? null,
+        acodec: fmt.acodec ?? null,
+        quality: qual,
+        label: `${qual} (video+audio)`,
+        hasVideo: true,
+        hasAudio: true,
+      });
+    } else if (hasVideo && !hasAudio) {
+      // Video-only: offer as merge with best audio
+      if (!height) continue;
+      if (seenHeights.has(height)) continue;
+      seenHeights.add(height);
+
+      const qual = `${height}p`;
+      const audioItag = bestAudioFmt?.format_id;
+      const mergeId = audioItag ? `${fmt.format_id}+${audioItag}` : `${fmt.format_id}+bestaudio`;
+      mergeFormats.push({
+        formatId: mergeId,
+        ext: "mp4",
+        resolution: `${fmt.width ?? "?"}x${height}`,
+        fps: fmt.fps ?? null,
+        filesize: null,
+        vcodec: fmt.vcodec ?? null,
+        acodec: "aac",
+        quality: qual,
+        label: `${qual} (merged, best quality)`,
+        hasVideo: true,
+        hasAudio: true,
+      });
+    }
+  }
+
+  // Best audio-only (MP3)
+  if (bestAudioFmt) {
+    const bitrateKbps = bestAudioFmt.abr
+      ? `${Math.round(bestAudioFmt.abr)}kbps`
+      : "best";
+    audioFormat = {
+      formatId: `audio:${bestAudioFmt.format_id}`,
+      ext: "mp3",
+      resolution: "audio only",
+      fps: null,
+      filesize: bestAudioFmt.filesize ?? bestAudioFmt.filesize_approx ?? null,
+      vcodec: null,
+      acodec: "mp3",
+      quality: bitrateKbps,
+      label: `Audio Only (MP3 ${bitrateKbps})`,
+      hasVideo: false,
+      hasAudio: true,
+    };
+  }
+
+  const sortFn = (a: VideoFormatOut, b: VideoFormatOut) => {
+    const aH = parseInt(a.quality) || 0;
+    const bH = parseInt(b.quality) || 0;
+    return (qualityOrder[bH] ?? bH) - (qualityOrder[aH] ?? aH);
+  };
+
+  return [
+    ...videoAudioFormats.sort(sortFn),
+    ...mergeFormats.sort(sortFn),
+    ...(audioFormat ? [audioFormat] : []),
+  ];
+}
+
 router.post("/youtube/info", async (req: Request, res: Response) => {
   const { url } = req.body as { url: string };
 
@@ -228,33 +180,31 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     return;
   }
 
-  const videoId = extractVideoId(url);
-  if (!videoId) {
+  if (!extractVideoId(url) && !url.includes("youtube.com") && !url.includes("youtu.be")) {
     res.status(400).json({ error: "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=..." });
     return;
   }
 
   try {
-    const tube = await getYt();
-    const info = await tube.getInfo(videoId);
-    const details = info.basic_info;
-    const streamingData = (info as any).streaming_data;
+    const json = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+    const data = JSON.parse(json);
 
-    const formats = buildFormats(streamingData);
+    const formats = buildFormats(data.formats ?? []);
 
-    const thumbnail = Array.isArray(details.thumbnail)
-      ? details.thumbnail[details.thumbnail.length - 1]?.url ?? null
-      : (details.thumbnail as any)?.url ?? null;
+    const thumbnail =
+      data.thumbnail ??
+      (Array.isArray(data.thumbnails) ? data.thumbnails[data.thumbnails.length - 1]?.url : null) ??
+      null;
 
     res.json({
-      id: videoId,
-      title: details.title ?? "Unknown Title",
-      duration: details.duration ?? null,
+      id: data.id,
+      title: data.title ?? "Unknown Title",
+      duration: data.duration ?? null,
       thumbnail,
-      uploader: (details as any).channel?.name ?? (details as any).author ?? null,
-      viewCount: details.view_count ?? null,
-      uploadDate: null,
-      description: ((details as any).short_description ?? "").slice(0, 500) || null,
+      uploader: data.uploader ?? data.channel ?? null,
+      viewCount: data.view_count ?? null,
+      uploadDate: data.upload_date ?? null,
+      description: (data.description ?? "").slice(0, 500) || null,
       formats,
     });
   } catch (err) {
@@ -280,12 +230,6 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
     return;
   }
 
-  const videoId = extractVideoId(url);
-  if (!videoId) {
-    res.status(400).json({ error: "Invalid YouTube URL" });
-    return;
-  }
-
   const jobId = randomUUID();
   const job: DownloadJob = {
     status: "pending",
@@ -305,7 +249,8 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Download started" });
 
-  processDownload(jobId, job, videoId).catch((err) => {
+  processDownload(jobId, job).catch((err) => {
+    req.log.error({ err, jobId }, "Download job failed");
     const j = jobs.get(jobId);
     if (j) {
       j.status = "error";
@@ -314,201 +259,149 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
   });
 });
 
-async function processDownload(jobId: string, job: DownloadJob, videoId: string): Promise<void> {
+async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
 
-  try {
-    const tube = await getYt();
-    const info = await tube.getInfo(videoId);
-    const details = info.basic_info;
-    const title = (details.title ?? "video").replace(/[^\w\s\-_.()]/g, "_").slice(0, 100);
-    const streamingData = (info as any).streaming_data;
+  const isAudioOnly = job.audioOnly || job.formatId.startsWith("audio:");
 
-    const allFormats: any[] = [
-      ...(streamingData?.adaptive_formats ?? []),
-      ...(streamingData?.formats ?? []),
-    ];
+  const rawFormatId = isAudioOnly
+    ? job.formatId.replace("audio:", "")
+    : job.formatId;
 
-    const isAudioOnly = job.audioOnly || job.formatId.startsWith("audio:");
-    const isMerge = job.formatId.startsWith("merge:");
+  const ext = isAudioOnly ? "mp3" : "mp4";
+  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
+  jobRef.ext = ext;
+  jobRef.status = "downloading";
+  jobRef.message = isAudioOnly ? "Downloading audio..." : "Downloading...";
 
-    if (isAudioOnly) {
-      const rawItag = parseInt(job.formatId.replace("audio:", ""));
-      const fmt = allFormats.find((f: any) => f.itag === rawItag) ?? allFormats.find((f: any) => f.has_audio && !f.has_video);
-      if (!fmt) throw new Error("Audio format not found");
+  const args: string[] = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--progress",
+  ];
 
-      const ext = "mp3";
-      const filename = `${title}.${ext}`;
-      const filePath = join(DOWNLOAD_DIR, `${jobId}.${ext}`);
-      jobRef.filename = filename;
-      jobRef.ext = ext;
-      jobRef.status = "downloading";
-
-      const stream = await info.download({
-        type: "audio",
-        quality: "best",
-        client: "WEB",
-      } as any);
-
-      await readableStreamToFile(stream, filePath, jobRef);
-      jobRef.status = "done";
-      jobRef.percent = 100;
-      jobRef.filePath = filePath;
-      jobRef.message = null;
-
-    } else if (isMerge) {
-      const videoItag = parseInt(job.formatId.replace("merge:", ""));
-      const videoFmt = allFormats.find((f: any) => f.itag === videoItag);
-      if (!videoFmt) throw new Error("Video format not found");
-
-      const qualityLabel = videoFmt.quality_label ?? videoFmt.quality ?? "video";
-      const filename = `${title}_${qualityLabel}.mp4`;
-      const filePath = join(DOWNLOAD_DIR, `${jobId}.mp4`);
-      const videoTmp = join(DOWNLOAD_DIR, `${jobId}_video.tmp`);
-      const audioTmp = join(DOWNLOAD_DIR, `${jobId}_audio.tmp`);
-      jobRef.filename = filename;
-      jobRef.ext = "mp4";
-      jobRef.status = "downloading";
-      jobRef.message = "Downloading video stream...";
-
-      const videoStream = await info.download({
-        type: "video",
-        quality: qualityLabel,
-        client: "WEB",
-      } as any);
-      await readableStreamToFile(videoStream, videoTmp, jobRef, 0, 45);
-
-      jobRef.message = "Downloading audio stream...";
-      const audioStream = await info.download({
-        type: "audio",
-        quality: "best",
-        client: "WEB",
-      } as any);
-      await readableStreamToFile(audioStream, audioTmp, jobRef, 45, 85);
-
-      jobRef.status = "merging";
-      jobRef.percent = 90;
-      jobRef.message = "Merging video and audio with ffmpeg...";
-
-      await ffmpegMerge(videoTmp, audioTmp, filePath);
-
-      try { unlinkSync(videoTmp); } catch {}
-      try { unlinkSync(audioTmp); } catch {}
-
-      jobRef.status = "done";
-      jobRef.percent = 100;
-      jobRef.filePath = filePath;
-      jobRef.message = null;
-
-    } else {
-      const itag = parseInt(job.formatId);
-      const fmt = allFormats.find((f: any) => f.itag === itag);
-      if (!fmt) throw new Error("Format not found");
-
-      const qualityLabel = fmt.quality_label ?? fmt.quality ?? "video";
-      const { ext } = parseCodecsFromMime(fmt.mime_type ?? "video/mp4");
-      const filename = `${title}_${qualityLabel}.${ext}`;
-      const filePath = join(DOWNLOAD_DIR, `${jobId}.${ext}`);
-      jobRef.filename = filename;
-      jobRef.ext = ext;
-      jobRef.status = "downloading";
-      jobRef.filesize = fmt.content_length ?? null;
-
-      const stream = await info.download({
-        type: "video+audio",
-        itag,
-        client: "WEB",
-      } as any);
-
-      await readableStreamToFile(stream, filePath, jobRef);
-      jobRef.status = "done";
-      jobRef.percent = 100;
-      jobRef.filePath = filePath;
-      jobRef.speed = null;
-      jobRef.eta = null;
-      jobRef.message = null;
-    }
-  } catch (err) {
-    jobRef.status = "error";
-    jobRef.message = err instanceof Error ? err.message : "Download failed";
-    throw err;
+  if (isAudioOnly) {
+    args.push("-f", rawFormatId);
+    args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
+  } else {
+    args.push("-f", rawFormatId);
+    args.push("--merge-output-format", "mp4");
   }
-}
 
-async function readableStreamToFile(
-  stream: ReadableStream<Uint8Array>,
-  filePath: string,
-  job: DownloadJob,
-  progressStart = 0,
-  progressEnd = 100
-): Promise<void> {
-  const writeStream = createWriteStream(filePath);
-  const reader = stream.getReader();
+  args.push("-o", outputPath, job.url);
 
-  let downloaded = 0;
-  let lastTime = Date.now();
-  let lastBytes = 0;
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    let stderr = "";
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    proc.stdout?.on("data", (data: Buffer) => {
+      const lines = data.toString().split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
 
-      await new Promise<void>((res, rej) => {
-        writeStream.write(value, (err) => (err ? rej(err) : res()));
-      });
-      downloaded += value.length;
+        // Parse progress lines: [download]  xx.x% of ~xx.xxMiB at xx.xxMiB/s ETA xx:xx
+        const progressMatch = trimmed.match(
+          /\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)([\w]+)\s+at\s+([\d.]+)([\w/]+)\s+ETA\s+(\S+)/
+        );
+        if (progressMatch) {
+          const percent = parseFloat(progressMatch[1]);
+          const sizeNum = parseFloat(progressMatch[2]);
+          const sizeUnit = progressMatch[3];
+          const speedNum = parseFloat(progressMatch[4]);
+          const speedUnit = progressMatch[5];
+          const eta = progressMatch[6];
 
-      const now = Date.now();
-      const dt = (now - lastTime) / 1000;
-      if (dt > 0.8) {
-        const bps = (downloaded - lastBytes) / dt;
-        const total = job.filesize ?? 0;
+          jobRef.percent = Math.round(percent);
+          jobRef.speed = `${speedNum}${speedUnit}`;
+          jobRef.eta = eta === "Unknown" ? null : eta;
 
-        if (bps > 0) {
-          job.speed = formatBytes(bps) + "/s";
-        }
-        if (total > 0) {
-          const pct = (downloaded / total) * (progressEnd - progressStart) + progressStart;
-          job.percent = Math.min(progressEnd - 1, Math.round(pct));
-          const remaining = total - downloaded;
-          const eta = bps > 0 ? Math.round(remaining / bps) : null;
-          job.eta = eta !== null ? formatSeconds(eta) : null;
-        } else {
-          job.percent = progressStart + Math.round((progressEnd - progressStart) * 0.5);
+          const mult: Record<string, number> = {
+            "B": 1, "KiB": 1024, "MiB": 1024 * 1024, "GiB": 1024 * 1024 * 1024,
+            "KB": 1000, "MB": 1000000, "GB": 1000000000,
+          };
+          if (sizeUnit in mult) {
+            jobRef.filesize = Math.round(sizeNum * mult[sizeUnit]);
+          }
+          continue;
         }
 
-        lastTime = now;
-        lastBytes = downloaded;
+        // Destination file (may appear multiple times: first for raw, then for converted)
+        const destMatch = trimmed.match(/\[(?:download|ExtractAudio|Merger)\] Destination:\s+(.+)/);
+        if (destMatch) {
+          const destPath = destMatch[1].trim();
+          const fname = destPath.split("/").pop() ?? destPath;
+          // Always update filePath (last Destination wins — e.g. mp3 after m4a)
+          jobRef.filename = fname;
+          jobRef.filePath = destPath;
+        }
+
+        // Merging
+        if (trimmed.includes("Merging formats") || trimmed.includes("[Merger]")) {
+          jobRef.status = "merging";
+          jobRef.message = "Merging video and audio...";
+          jobRef.percent = Math.max(jobRef.percent ?? 0, 90);
+        }
+
+        // Already downloaded
+        if (trimmed.includes("has already been downloaded")) {
+          const alreadyMatch = trimmed.match(/\[download\] (.+) has already been downloaded/);
+          if (alreadyMatch) {
+            jobRef.filename = alreadyMatch[1].split("/").pop() ?? "";
+            jobRef.filePath = alreadyMatch[1].trim();
+          }
+        }
       }
-    }
-  } finally {
-    reader.releaseLock();
-    await new Promise<void>((resolve, reject) => {
-      writeStream.end((err: unknown) => (err ? reject(err) : resolve()));
     });
-  }
-}
 
-async function ffmpegMerge(videoPath: string, audioPath: string, outPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ffmpegPath = process.env.FFMPEG_PATH ?? "ffmpeg";
-    const args = [
-      "-i", videoPath,
-      "-i", audioPath,
-      "-c:v", "copy",
-      "-c:a", "aac",
-      "-movflags", "+faststart",
-      "-y",
-      outPath,
-    ];
-    const proc = spawn(ffmpegPath, args, { stdio: "ignore" });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}`));
+    proc.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
     });
-    proc.on("error", reject);
+
+    proc.on("close", (code: number | null) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`));
+    });
+
+    proc.on("error", (err: Error) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
   });
+
+  // Find the output file (yt-dlp may change extension)
+  const possibleExts = isAudioOnly ? ["mp3"] : ["mp4", "mkv", "webm"];
+  let finalPath: string | null = null;
+
+  for (const e of possibleExts) {
+    const p = join(DOWNLOAD_DIR, `${jobId}.${e}`);
+    if (existsSync(p)) {
+      finalPath = p;
+      jobRef.ext = e;
+      break;
+    }
+  }
+
+  // If not found by ext, try to use the path set from stdout
+  if (!finalPath && jobRef.filePath && existsSync(jobRef.filePath)) {
+    finalPath = jobRef.filePath;
+  }
+
+  if (!finalPath) {
+    throw new Error("Downloaded file not found on disk");
+  }
+
+  const stats = statSync(finalPath);
+  jobRef.filesize = stats.size;
+  jobRef.filePath = finalPath;
+  if (!jobRef.filename) {
+    jobRef.filename = finalPath.split("/").pop() ?? `video.${jobRef.ext}`;
+  }
+  jobRef.status = "done";
+  jobRef.percent = 100;
+  jobRef.speed = null;
+  jobRef.eta = null;
+  jobRef.message = null;
 }
 
 router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
@@ -550,8 +443,6 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Length", stats.size);
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { createReadStream } = require("fs");
   const readStream = createReadStream(job.filePath);
   readStream.pipe(res);
 
