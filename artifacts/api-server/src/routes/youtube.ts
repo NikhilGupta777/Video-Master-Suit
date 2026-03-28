@@ -385,12 +385,10 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     !url.includes("youtube.com") &&
     !url.includes("youtu.be")
   ) {
-    res
-      .status(400)
-      .json({
-        error:
-          "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=...",
-      });
+    res.status(400).json({
+      error:
+        "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=...",
+    });
     return;
   }
 
@@ -671,12 +669,10 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
     return;
   }
   if (job.status === "expired") {
-    res
-      .status(410)
-      .json({
-        error: "File has expired. Please download the video again.",
-        expired: true,
-      });
+    res.status(410).json({
+      error: "File has expired. Please download the video again.",
+      expired: true,
+    });
     return;
   }
   if (job.status !== "done" || !job.filePath) {
@@ -685,12 +681,10 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   }
 
   if (!existsSync(job.filePath)) {
-    res
-      .status(410)
-      .json({
-        error: "File has expired. Please download the video again.",
-        expired: true,
-      });
+    res.status(410).json({
+      error: "File has expired. Please download the video again.",
+      expired: true,
+    });
     return;
   }
 
@@ -820,12 +814,10 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
     return;
   }
   if (!process.env.GEMINI_API_KEY) {
-    res
-      .status(503)
-      .json({
-        error: "AI not configured",
-        details: "GEMINI_API_KEY is not set",
-      });
+    res.status(503).json({
+      error: "AI not configured",
+      details: "GEMINI_API_KEY is not set",
+    });
     return;
   }
 
@@ -1115,7 +1107,7 @@ Respond with ONLY a valid JSON array (no markdown, no extra text):
     const userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 80000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
+${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 150000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
 
 Find every worthwhile clip for these duration categories:
 ${durationDescList}
@@ -1146,7 +1138,8 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
 
     const clips: BestClip[] = parsed
       .filter((c: any) => {
-        const hasSecs = typeof c.startSec === "number" && typeof c.endSec === "number";
+        const hasSecs =
+          typeof c.startSec === "number" && typeof c.endSec === "number";
         const hasTarget = typeof c.targetDuration === "number";
         // Also accept legacy durationSec format as fallback
         return hasSecs && (hasTarget || typeof c.durationSec === "number");
@@ -1168,7 +1161,8 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
           startFormatted: formatTime(startSec),
           endFormatted: formatTime(endSec),
           title:
-            c.title ?? `Best ${durationLabels[targetDur] ?? targetDur + "s"} clip`,
+            c.title ??
+            `Best ${durationLabels[targetDur] ?? targetDur + "s"} clip`,
           description: c.description ?? "",
           reason: c.reason ?? "",
         };
