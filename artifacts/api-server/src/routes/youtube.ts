@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync, readdirSync, rmdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
@@ -576,18 +576,17 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
     : [60, 180, 300, 600];
 
   const tmpId = randomUUID();
-  const subBase = join(DOWNLOAD_DIR, `subs_${tmpId}`);
+  const subDir = join(DOWNLOAD_DIR, `subs_${tmpId}`);
 
   try {
-    // 1. Get video metadata and subtitles
-    req.log.info({ url }, "Fetching subtitles for clips analysis");
+    req.log.info({ url }, "Fetching metadata and transcript for clips analysis");
 
     let transcript = "";
     let videoDuration = 0;
     let videoTitle = "";
     let videoDescription = "";
 
-    // Get metadata first
+    // 1. Get video metadata
     try {
       const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
       const meta = JSON.parse(metaJson);
@@ -595,44 +594,83 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
       videoTitle = meta.title ?? "";
       videoDescription = (meta.description ?? "").slice(0, 1000);
 
-      // Extract chapters if available
+      // Use chapters if available (rich timestamp data)
       if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
         transcript = meta.chapters
-          .map((c: any) => `[${formatTime(c.start_time)}] Chapter: ${c.title}`)
+          .map((c: any) => `[${formatTime(c.start_time)}–${formatTime(c.end_time ?? c.start_time + 60)}] Chapter: ${c.title}`)
           .join("\n");
+        req.log.info({ chapCount: meta.chapters.length }, "Using chapter data as transcript");
       }
     } catch (e) {
       req.log.warn({ e }, "Failed to fetch video metadata");
     }
 
-    // Try to get subtitles
+    // 2. Try to get subtitles/captions — multiple strategies for robustness
     if (!transcript) {
       try {
+        mkdirSync(subDir, { recursive: true });
+
+        // Strategy A: auto-subs with wildcard English match (covers en, en-US, en-GB, a.en, etc.)
         const subArgs = [
           "--write-subs", "--write-auto-subs",
-          "--sub-lang", "en",
+          "--sub-lang", "en.*",
           "--sub-format", "vtt",
           "--skip-download",
           "--no-warnings",
           "--no-playlist",
-          "-o", subBase + ".%(ext)s",
+          "-o", join(subDir, "sub"),
           url,
         ];
-        await runYtDlp(subArgs);
-        // Find the vtt file
-        const vttFile = [`${subBase}.en.vtt`, `${subBase}.en-orig.vtt`].find(f => existsSync(f));
-        if (vttFile) {
-          const content = readFileSync(vttFile, "utf8");
-          const cues = parseVtt(content);
-          transcript = cuesToText(cues);
-          try { unlinkSync(vttFile); } catch {}
+
+        await runYtDlp(subArgs).catch(() => {
+          // Strategy B: try without language restriction (get whatever is available)
+          return runYtDlp([
+            "--write-auto-subs",
+            "--sub-format", "vtt",
+            "--skip-download",
+            "--no-warnings",
+            "--no-playlist",
+            "-o", join(subDir, "sub"),
+            url,
+          ]).catch(() => {});
+        });
+
+        // Scan the temp directory for any .vtt file produced
+        let vttContent: string | null = null;
+        if (existsSync(subDir)) {
+          const created = readdirSync(subDir);
+          req.log.info({ created }, "Subtitle files created");
+          const vttFile = created
+            .map(f => join(subDir, f))
+            .find(f => f.endsWith(".vtt"));
+          if (vttFile) {
+            vttContent = readFileSync(vttFile, "utf8");
+          }
+          // Cleanup
+          for (const f of created) {
+            try { unlinkSync(join(subDir, f)); } catch {}
+          }
+          try { rmdirSync(subDir); } catch {}
+        }
+
+        if (vttContent) {
+          const cues = parseVtt(vttContent);
+          // Deduplicate sequential identical lines (VTT often repeats)
+          const deduped: VttCue[] = [];
+          for (const cue of cues) {
+            if (deduped.length === 0 || deduped[deduped.length - 1].text !== cue.text) {
+              deduped.push(cue);
+            }
+          }
+          transcript = cuesToText(deduped);
+          req.log.info({ cueCount: deduped.length }, "Successfully extracted transcript from subtitles");
         }
       } catch (e) {
         req.log.warn({ e }, "Failed to get subtitles, proceeding without transcript");
       }
     }
 
-    // 2. Build the context for the LLM
+    // 3. Build context and call AI
     const hasTranscript = transcript.length > 50;
     const validDurations = clipDurations.filter(d => !videoDuration || d < videoDuration);
 
@@ -640,39 +678,50 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
       60: "1 minute", 180: "3 minutes", 300: "5 minutes", 600: "10 minutes",
     };
 
+    // Determine how many clips per duration based on video length
+    const videoMinutes = videoDuration / 60;
+    let clipsPerDuration = 3;
+    if (videoMinutes >= 30) clipsPerDuration = 7;
+    else if (videoMinutes >= 15) clipsPerDuration = 5;
+    else if (videoMinutes >= 5) clipsPerDuration = 4;
+
     const durationDescList = validDurations
-      .map(d => `- ${durationLabels[d] ?? `${d} seconds`} (${d}s)`)
+      .map(d => `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`)
       .join("\n");
 
-    const systemPrompt = `You are a video content analyst. Your job is to identify the best, most engaging clip from a YouTube video for each requested duration. 
-    
-You analyze transcripts, chapters, and descriptions to find segments with the highest value — most interesting, informative, funny, or shareable moments.
+    const systemPrompt = `You are an expert video content analyst specializing in identifying viral, engaging clip segments.
 
-Always respond with ONLY a valid JSON array, no markdown, no explanation. Each element:
+Your task: For each requested clip duration, identify ALL high-quality segments in the video — not just one.
+
+Rules:
+1. For each duration, find ${clipsPerDuration} to ${clipsPerDuration + 3} non-overlapping segments (fewer only if the video is short or lacks enough content)
+2. Segments of the same duration must NOT overlap with each other
+3. Cover different parts of the video — spread clips across the full runtime
+4. Sort clips within each duration group by quality/engagement score (best first)
+5. endSec must equal startSec + durationSec exactly
+6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}
+7. Prefer segments that start at natural speech/scene boundaries when transcript is available
+
+Respond with ONLY a valid JSON array (no markdown, no explanation). Each object:
 {
-  "durationSec": <requested duration>,
-  "startSec": <start time in seconds>,
-  "endSec": <end time in seconds>,
-  "title": "<compelling short clip title>",
-  "description": "<2-3 sentence description of what happens in this clip and why it's engaging>",
-  "reason": "<one sentence on why this is the best clip for this duration>"
+  "durationSec": <number — the exact requested duration in seconds>,
+  "startSec": <number — clip start in seconds>,
+  "title": "<short compelling clip title>",
+  "description": "<2-3 sentences describing what happens and why it's engaging>",
+  "reason": "<one sentence: why this specific moment is great for this duration>"
 }`;
 
     const userContent = `Video: "${videoTitle}"
-Total Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"}
+Total Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (with timestamps):\n${transcript.slice(0, 12000)}` : "\n[No transcript available — base analysis on title and description]"}
+${hasTranscript ? `\nTranscript (timestamped):\n${transcript.slice(0, 14000)}` : "\n[No transcript available — use the title, description, and typical video structure to estimate best segments]"}
 
-Find the single best clip for each of these durations:
+Find ALL best clips for each of these durations:
 ${durationDescList}
 
-Important rules:
-- endSec = startSec + durationSec (exact)
-- startSec must be ≥ 0 and endSec must be ≤ ${videoDuration || 99999}
-- Different start times for each duration
-- For longer clips, pick sections with the most complete content arc`;
+Remember: Return MULTIPLE clips per duration — aim for ${clipsPerDuration}–${clipsPerDuration + 3} clips per duration. Cover different sections of the video.`;
 
-    req.log.info({ validDurations, hasTranscript }, "Calling Gemini for clip analysis");
+    req.log.info({ validDurations, hasTranscript, clipsPerDuration }, "Calling Gemini for multi-clip analysis");
 
     if (!process.env.GEMINI_API_KEY) {
       res.status(503).json({ error: "AI not configured", details: "GEMINI_API_KEY is not set" });
@@ -685,12 +734,11 @@ Important rules:
     let parsed: any[];
 
     try {
-      // Strip markdown code blocks if present
       const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
       parsed = JSON.parse(cleaned);
       if (!Array.isArray(parsed)) parsed = [parsed];
     } catch (e) {
-      req.log.error({ raw, e }, "Failed to parse OpenAI response as JSON");
+      req.log.error({ raw, e }, "Failed to parse Gemini response as JSON");
       res.status(500).json({ error: "Failed to parse AI response", raw });
       return;
     }
@@ -698,22 +746,29 @@ Important rules:
     const clips: BestClip[] = parsed
       .filter((c: any) => typeof c.startSec === "number" && typeof c.durationSec === "number")
       .map((c: any): BestClip => {
-        const durLabel = durationLabels[c.durationSec] ?? `${c.durationSec}s`;
-        const actualEnd = Math.round(c.startSec + c.durationSec);
+        const durSec = c.durationSec;
+        const durLabel = durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`;
+        const startSec = Math.max(0, Math.round(c.startSec));
+        const endSec = Math.min(videoDuration || 99999, startSec + durSec);
         return {
           durationLabel: durLabel,
-          durationSec: c.durationSec,
-          startSec: Math.round(c.startSec),
-          endSec: actualEnd,
-          startFormatted: formatTime(Math.round(c.startSec)),
-          endFormatted: formatTime(actualEnd),
+          durationSec: durSec,
+          startSec,
+          endSec,
+          startFormatted: formatTime(startSec),
+          endFormatted: formatTime(endSec),
           title: c.title ?? `Best ${durLabel} clip`,
           description: c.description ?? "",
           reason: c.reason ?? "",
         };
       })
-      .sort((a: BestClip, b: BestClip) => a.durationSec - b.durationSec);
+      // Sort by duration first, then by start time within each duration
+      .sort((a: BestClip, b: BestClip) => a.durationSec !== b.durationSec
+        ? a.durationSec - b.durationSec
+        : a.startSec - b.startSec
+      );
 
+    req.log.info({ totalClips: clips.length }, "Clips analysis complete");
     res.json({ clips, hasTranscript, videoDuration });
 
   } catch (err) {
