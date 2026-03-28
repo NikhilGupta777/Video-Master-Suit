@@ -1,8 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
-  Loader2, AlertCircle, CheckCircle2, Info, Film
+  Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
+  AlertTriangle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,17 +29,30 @@ const DURATION_OPTIONS = [
   { label: "10 min", value: 600, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
 ];
 
-type ClipKey = string; // `${durationSec}|${startSec}`
+type StepStatus = "idle" | "running" | "done" | "warn" | "error";
+interface StepState {
+  status: StepStatus;
+  message: string;
+  data?: Record<string, any>;
+}
 
+type ClipKey = string;
 interface DownloadState {
   status: "idle" | "downloading" | "done" | "error";
   percent: number;
   message?: string;
 }
 
-interface Props {
-  url: string;
-}
+const STEPS = ["metadata", "transcript", "ai"] as const;
+type StepName = typeof STEPS[number];
+
+const STEP_META: Record<StepName, { label: string; icon: any }> = {
+  metadata:   { label: "Video info",   icon: Wifi },
+  transcript: { label: "Transcript",   icon: FileText },
+  ai:         { label: "AI analysis",  icon: Bot },
+};
+
+interface Props { url: string; }
 
 export function BestClips({ url }: Props) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60, 180, 300, 600]);
@@ -48,6 +62,12 @@ export function BestClips({ url }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [expandedClip, setExpandedClip] = useState<ClipKey | null>(null);
   const [downloadStates, setDownloadStates] = useState<Record<ClipKey, DownloadState>>({});
+  const [steps, setSteps] = useState<Record<StepName, StepState>>({
+    metadata:   { status: "idle", message: "" },
+    transcript: { status: "idle", message: "" },
+    ai:         { status: "idle", message: "" },
+  });
+  const esRef = useRef<EventSource | null>(null);
   const { toast } = useToast();
 
   const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "");
@@ -67,65 +87,106 @@ export function BestClips({ url }: Props) {
     );
   };
 
+  const resetSteps = () => setSteps({
+    metadata:   { status: "idle", message: "" },
+    transcript: { status: "idle", message: "" },
+    ai:         { status: "idle", message: "" },
+  });
+
+  const updateStep = (name: StepName, status: StepStatus, message: string, data?: Record<string, any>) => {
+    setSteps(prev => ({ ...prev, [name]: { status, message, data } }));
+  };
+
   const handleAnalyze = async () => {
     if (!url.trim() || selectedDurations.length === 0) return;
+
+    // Close any previous SSE
+    esRef.current?.close();
+    esRef.current = null;
+
     setIsLoading(true);
     setError(null);
     setClips([]);
     setExpandedClip(null);
     setDownloadStates({});
+    resetSteps();
 
     try {
-      const res = await fetch(`${BASE}/api/youtube/clips`, {
+      // 1. Start the job
+      const startRes = await fetch(`${BASE}/api/youtube/clips`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: url.trim(), durations: selectedDurations }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Analysis failed");
-      setClips(data.clips ?? []);
-      setHasTranscript(data.hasTranscript ?? false);
-      if (!data.clips?.length) setError("No clips could be identified for this video.");
+      const startData = await startRes.json();
+      if (!startRes.ok) throw new Error(startData.error ?? "Failed to start analysis");
+
+      const { jobId } = startData;
+
+      // 2. Connect SSE stream
+      const es = new EventSource(`${BASE}/api/youtube/clips/stream/${jobId}`);
+      esRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === "step") {
+            const stepName = msg.step as StepName;
+            if (STEPS.includes(stepName)) {
+              updateStep(stepName, msg.status as StepStatus, msg.message, msg);
+            }
+          } else if (msg.type === "done") {
+            setClips(msg.clips ?? []);
+            setHasTranscript(msg.hasTranscript ?? false);
+            if (!msg.clips?.length) setError("No clips could be identified for this video.");
+            setIsLoading(false);
+            es.close();
+            esRef.current = null;
+          } else if (msg.type === "error") {
+            setError(msg.message ?? "Analysis failed");
+            setIsLoading(false);
+            es.close();
+            esRef.current = null;
+          }
+        } catch {}
+      };
+
+      es.onerror = () => {
+        setError("Connection lost during analysis. Please try again.");
+        setIsLoading(false);
+        es.close();
+        esRef.current = null;
+      };
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to analyze video");
-    } finally {
+      setError(err instanceof Error ? err.message : "Failed to start analysis");
       setIsLoading(false);
     }
   };
 
   const handleDownloadClip = async (clip: BestClip) => {
     const key = clipKey(clip);
-    const current = downloadStates[key];
-    if (current?.status === "downloading") return; // already in progress
+    if (downloadStates[key]?.status === "downloading") return;
 
     setDownload(key, { status: "downloading", percent: 0, message: "Starting…" });
 
     try {
-      // Start the clip download job
       const startRes = await fetch(`${BASE}/api/youtube/download-clip`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: url.trim(),
-          startSec: clip.startSec,
-          endSec: clip.endSec,
-          title: clip.title,
-        }),
+        body: JSON.stringify({ url: url.trim(), startSec: clip.startSec, endSec: clip.endSec, title: clip.title }),
       });
       const startData = await startRes.json();
       if (!startRes.ok) throw new Error(startData.error ?? "Failed to start download");
 
       const { jobId } = startData;
 
-      // Poll for progress until done
       for (let i = 0; i < 150; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const progRes = await fetch(`${BASE}/api/youtube/progress/${jobId}`);
-        const prog = await progRes.json();
+        const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`).then(r => r.json());
 
         if (prog.status === "done") {
           setDownload(key, { status: "done", percent: 100 });
-          // Trigger browser download
           const link = document.createElement("a");
           link.href = `${BASE}/api/youtube/file/${jobId}`;
           link.download = `${clip.title}.mp4`;
@@ -135,22 +196,16 @@ export function BestClips({ url }: Props) {
           toast({ title: "Clip downloaded!", description: `"${clip.title}" saved to your downloads.` });
           return;
         }
+        if (prog.status === "error") throw new Error(prog.message ?? "Download failed");
 
-        if (prog.status === "error") {
-          throw new Error(prog.message ?? "Download failed");
-        }
-
-        // Update progress
         const pct = prog.percent ?? 0;
-        const statusMsg = prog.status === "merging"
-          ? "Merging…"
-          : pct > 0
-            ? `Downloading… ${pct}%`
-            : "Preparing…";
-        setDownload(key, { status: "downloading", percent: pct, message: statusMsg });
+        setDownload(key, {
+          status: "downloading",
+          percent: pct,
+          message: prog.status === "merging" ? "Merging…" : pct > 0 ? `Downloading… ${pct}%` : "Preparing…",
+        });
       }
-
-      throw new Error("Download timed out after 5 minutes");
+      throw new Error("Download timed out");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Something went wrong";
       setDownload(key, { status: "error", percent: 0, message: msg });
@@ -161,20 +216,21 @@ export function BestClips({ url }: Props) {
   const getDurationStyle = (durationSec: number) =>
     DURATION_OPTIONS.find(d => d.value === durationSec) ?? DURATION_OPTIONS[0];
 
-  // Group clips by duration, preserving AI-returned order (best first)
   const groupedClips = clips.reduce<Array<{ durationSec: number; durationLabel: string; clips: BestClip[] }>>(
     (acc, clip) => {
       const existing = acc.find(g => g.durationSec === clip.durationSec);
       if (existing) existing.clips.push(clip);
       else acc.push({ durationSec: clip.durationSec, durationLabel: clip.durationLabel, clips: [clip] });
       return acc;
-    },
-    []
+    }, []
   );
+
+  const stepRunning = (name: StepName) => steps[name].status === "running";
+  const anyStepRunning = STEPS.some(s => steps[s].status === "running");
 
   return (
     <div className="w-full space-y-6">
-      {/* Duration Selector */}
+      {/* Controls */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">
         <div className="flex items-center gap-3">
           <div className="bg-primary/20 p-2 rounded-xl border border-primary/30">
@@ -182,7 +238,7 @@ export function BestClips({ url }: Props) {
           </div>
           <div>
             <h3 className="font-display font-semibold text-white text-lg">Find Best Clips</h3>
-            <p className="text-white/50 text-sm">AI analyzes the video to find all the most engaging segments</p>
+            <p className="text-white/50 text-sm">AI scans the entire video to find every great segment</p>
           </div>
         </div>
 
@@ -199,9 +255,7 @@ export function BestClips({ url }: Props) {
                     ? "bg-primary/20 border-primary/50 text-white shadow-[0_0_12px_rgba(229,9,20,0.2)]"
                     : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
                 )}
-              >
-                {opt.label}
-              </button>
+              >{opt.label}</button>
             ))}
           </div>
         </div>
@@ -212,49 +266,99 @@ export function BestClips({ url }: Props) {
           className="w-full h-12 rounded-xl"
           size="lg"
         >
-          {isLoading ? (
-            <span className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Analyzing video...
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              Find Best Clips
-            </span>
-          )}
+          {isLoading
+            ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Analyzing video...</span>
+            : <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best Clips</span>
+          }
         </Button>
       </div>
 
-      {/* Loading state */}
+      {/* Live step-by-step status */}
       <AnimatePresence>
         {isLoading && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="glass-panel rounded-2xl p-8 flex flex-col items-center gap-4 text-center"
+            className="glass-panel rounded-2xl p-5 space-y-3"
           >
-            <div className="relative">
-              <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
-                <Sparkles className="w-7 h-7 text-primary animate-pulse" />
-              </div>
-              <div className="absolute -inset-2 rounded-full border border-primary/20 animate-ping" />
-            </div>
-            <div>
-              <p className="text-white font-semibold text-lg">AI is analyzing the video</p>
-              <p className="text-white/50 text-sm mt-1">Downloading transcript and finding all the best moments…</p>
-            </div>
-            <div className="flex gap-1.5 mt-2">
-              {[0, 1, 2].map(i => (
-                <div key={i} className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
-              ))}
-            </div>
+            <p className="text-white/50 text-xs font-semibold uppercase tracking-widest mb-1">What's happening</p>
+            {STEPS.map((name, idx) => {
+              const s = steps[name];
+              const meta = STEP_META[name];
+              const Icon = meta.icon;
+              const isIdle = s.status === "idle";
+              const isRunning = s.status === "running";
+              const isDone = s.status === "done";
+              const isWarn = s.status === "warn";
+
+              return (
+                <motion.div
+                  key={name}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className={cn(
+                    "flex items-start gap-3 p-3 rounded-xl border transition-all duration-300",
+                    isRunning && "border-primary/30 bg-primary/5",
+                    isDone && "border-emerald-500/20 bg-emerald-500/5",
+                    isWarn && "border-amber-500/20 bg-amber-500/5",
+                    isIdle && "border-white/5 opacity-40",
+                  )}
+                >
+                  {/* Step icon */}
+                  <div className={cn(
+                    "shrink-0 w-7 h-7 rounded-lg flex items-center justify-center mt-0.5",
+                    isRunning && "bg-primary/20 border border-primary/30",
+                    isDone && "bg-emerald-500/20 border border-emerald-500/30",
+                    isWarn && "bg-amber-500/20 border border-amber-500/30",
+                    isIdle && "bg-white/5 border border-white/10",
+                  )}>
+                    {isRunning
+                      ? <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
+                      : isDone
+                        ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        : isWarn
+                          ? <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                          : <Icon className="w-3.5 h-3.5 text-white/30" />
+                    }
+                  </div>
+
+                  {/* Step info */}
+                  <div className="flex-1 min-w-0">
+                    <p className={cn(
+                      "text-xs font-semibold uppercase tracking-wide",
+                      isRunning && "text-primary/80",
+                      isDone && "text-emerald-400/80",
+                      isWarn && "text-amber-400/80",
+                      isIdle && "text-white/25",
+                    )}>{meta.label}</p>
+                    {s.message && (
+                      <p className={cn(
+                        "text-sm mt-0.5 leading-snug",
+                        isRunning && "text-white/80",
+                        isDone && "text-white/65",
+                        isWarn && "text-amber-300/70",
+                        isIdle && "text-white/25",
+                      )}>{s.message}</p>
+                    )}
+                    {/* Pulsing dots for running step */}
+                    {isRunning && (
+                      <div className="flex gap-1 mt-1.5">
+                        {[0, 1, 2].map(i => (
+                          <div key={i} className="w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce" style={{ animationDelay: `${i * 0.12}s` }} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              );
+            })}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Error state */}
+      {/* Error */}
       <AnimatePresence>
         {error && !isLoading && (
           <motion.div
@@ -272,11 +376,10 @@ export function BestClips({ url }: Props) {
         )}
       </AnimatePresence>
 
-      {/* Results — grouped by duration */}
+      {/* Results */}
       <AnimatePresence>
         {groupedClips.length > 0 && !isLoading && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
-            {/* Summary header */}
             <div className="flex items-center gap-3 px-1 flex-wrap">
               <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <h3 className="text-lg font-display font-semibold text-white">
@@ -284,13 +387,11 @@ export function BestClips({ url }: Props) {
               </h3>
               {!hasTranscript && (
                 <div className="flex items-center gap-1.5 text-amber-300 text-xs bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full ml-auto">
-                  <Info className="w-3 h-3" />
-                  Based on title &amp; description (no transcript)
+                  <Info className="w-3 h-3" />Based on title &amp; description (no transcript)
                 </div>
               )}
             </div>
 
-            {/* Duration groups */}
             {groupedClips.map((group, groupIdx) => {
               const style = getDurationStyle(group.durationSec);
               return (
@@ -301,7 +402,6 @@ export function BestClips({ url }: Props) {
                   transition={{ delay: groupIdx * 0.07 }}
                   className="space-y-2"
                 >
-                  {/* Group header */}
                   <div className={cn("flex items-center gap-3 px-4 py-2.5 rounded-xl border", style.accent)}>
                     <Film className="w-4 h-4 text-white/40" />
                     <Badge className={cn("text-xs font-bold px-3 py-1 rounded-lg border", style.badge)}>
@@ -312,7 +412,6 @@ export function BestClips({ url }: Props) {
                     </span>
                   </div>
 
-                  {/* Clip cards */}
                   <div className="space-y-2 pl-2">
                     {group.clips.map((clip, clipIdx) => {
                       const key = clipKey(clip);
@@ -328,41 +427,24 @@ export function BestClips({ url }: Props) {
                           className="group relative glass-panel rounded-xl overflow-hidden border-white/5 hover:border-white/10 transition-all duration-300"
                         >
                           <div className={cn("absolute inset-0 bg-gradient-to-br opacity-10 pointer-events-none", style.color)} />
-
-                          {/* Download progress bar */}
                           {dl.status === "downloading" && (
                             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-                              <motion.div
-                                className="h-full bg-primary"
-                                initial={{ width: 0 }}
-                                animate={{ width: `${dl.percent}%` }}
-                                transition={{ duration: 0.4 }}
-                              />
+                              <motion.div className="h-full bg-primary" initial={{ width: 0 }} animate={{ width: `${dl.percent}%` }} transition={{ duration: 0.4 }} />
                             </div>
                           )}
 
                           <div className="relative p-4">
                             <div className="flex items-start gap-3">
-                              {/* Rank */}
                               <div className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/30 text-xs font-bold">
                                 {clipIdx + 1}
                               </div>
-
-                              {/* Info */}
                               <div className="flex-1 min-w-0">
-                                <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 truncate">
-                                  {clip.title}
-                                </h4>
+                                <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 truncate">{clip.title}</h4>
                                 <div className="flex items-center gap-3 text-white/50 text-xs">
-                                  <span className="flex items-center gap-1">
-                                    <Play className="w-3 h-3" />{clip.startFormatted}
-                                  </span>
+                                  <span className="flex items-center gap-1"><Play className="w-3 h-3" />{clip.startFormatted}</span>
                                   <span>→</span>
-                                  <span className="flex items-center gap-1">
-                                    <Clock className="w-3 h-3" />{clip.endFormatted}
-                                  </span>
+                                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{clip.endFormatted}</span>
                                 </div>
-                                {/* Download status text */}
                                 {dl.status === "downloading" && dl.message && (
                                   <p className="text-primary/70 text-xs mt-1 font-medium">{dl.message}</p>
                                 )}
@@ -371,7 +453,6 @@ export function BestClips({ url }: Props) {
                                 )}
                               </div>
 
-                              {/* Actions */}
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <button
                                   onClick={() => setExpandedClip(isExpanded ? null : key)}
@@ -391,29 +472,18 @@ export function BestClips({ url }: Props) {
                                     dl.status === "error" && "bg-red-500/10 border-red-500/30 text-red-300"
                                   )}
                                 >
-                                  {dl.status === "downloading" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                      {dl.percent > 0 ? `${dl.percent}%` : "…"}
-                                    </span>
-                                  ) : dl.status === "done" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <CheckCircle2 className="w-3 h-3" /> Downloaded
-                                    </span>
-                                  ) : dl.status === "error" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <Download className="w-3 h-3" /> Retry
-                                    </span>
-                                  ) : (
-                                    <span className="flex items-center gap-1.5">
-                                      <Download className="w-3 h-3" /> Download
-                                    </span>
-                                  )}
+                                  {dl.status === "downloading"
+                                    ? <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />{dl.percent > 0 ? `${dl.percent}%` : "…"}</span>
+                                    : dl.status === "done"
+                                      ? <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3" />Downloaded</span>
+                                      : dl.status === "error"
+                                        ? <span className="flex items-center gap-1.5"><Download className="w-3 h-3" />Retry</span>
+                                        : <span className="flex items-center gap-1.5"><Download className="w-3 h-3" />Download</span>
+                                  }
                                 </Button>
                               </div>
                             </div>
 
-                            {/* Expandable detail */}
                             <AnimatePresence>
                               {isExpanded && (
                                 <motion.div

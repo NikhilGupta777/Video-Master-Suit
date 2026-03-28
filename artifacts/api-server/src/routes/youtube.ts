@@ -1,5 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { spawn } from "child_process";
+import { EventEmitter } from "events";
 import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync, readdirSync, rmdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -501,28 +502,21 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   });
 });
 
-// ─── Best Clips Feature ────────────────────────────────────────────────────
+// ─── Best Clips Feature (streaming with SSE) ──────────────────────────────
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
 
-interface VttCue {
-  startSec: number;
-  endSec: number;
-  text: string;
-}
+interface VttCue { startSec: number; endSec: number; text: string; }
 
 function vttTimeToSec(t: string): number {
   const parts = t.split(":");
-  if (parts.length === 3) {
-    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-  }
+  if (parts.length === 3) return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
   return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
 }
 
 function parseVtt(content: string): VttCue[] {
   const cues: VttCue[] = [];
-  const blocks = content.split(/\n\n+/);
-  for (const block of blocks) {
+  for (const block of content.split(/\n\n+/)) {
     const lines = block.trim().split("\n");
     const timeLine = lines.find(l => l.includes("-->"));
     if (!timeLine) continue;
@@ -532,21 +526,17 @@ function parseVtt(content: string): VttCue[] {
       .map(l => l.replace(/<[^>]+>/g, "").trim())
       .filter(Boolean)
       .join(" ");
-    if (text) {
-      cues.push({ startSec: vttTimeToSec(startStr), endSec: vttTimeToSec(endStr), text });
-    }
+    if (text) cues.push({ startSec: vttTimeToSec(startStr), endSec: vttTimeToSec(endStr), text });
   }
   return cues;
 }
 
 function cuesToText(cues: VttCue[]): string {
-  return cues
-    .map(c => {
-      const mm = Math.floor(c.startSec / 60);
-      const ss = Math.floor(c.startSec % 60);
-      return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${c.text}`;
-    })
-    .join("\n");
+  return cues.map(c => {
+    const mm = Math.floor(c.startSec / 60);
+    const ss = Math.floor(c.startSec % 60);
+    return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${c.text}`;
+  }).join("\n");
 }
 
 function formatTime(sec: number): string {
@@ -569,30 +559,115 @@ export interface BestClip {
   reason: string;
 }
 
+interface ClipJob {
+  emitter: EventEmitter;
+  status: "pending" | "running" | "done" | "error";
+  result?: { clips: BestClip[]; hasTranscript: boolean; videoDuration: number };
+  error?: string;
+  createdAt: number;
+}
+
+const clipJobs = new Map<string, ClipJob>();
+
+// Clean up clip jobs older than 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, job] of clipJobs.entries()) {
+    if (job.createdAt < cutoff) clipJobs.delete(id);
+  }
+}, 10 * 60 * 1000);
+
+// POST: start a clip analysis job, return jobId immediately
 router.post("/youtube/clips", async (req: Request, res: Response) => {
   const { url, durations } = req.body as { url: string; durations?: number[] };
-
-  if (!url) {
-    res.status(400).json({ error: "URL is required" });
+  if (!url) { res.status(400).json({ error: "URL is required" }); return; }
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(503).json({ error: "AI not configured", details: "GEMINI_API_KEY is not set" });
     return;
   }
 
-  const clipDurations: number[] = (durations && durations.length > 0)
-    ? durations
-    : [60, 180, 300, 600];
+  const jobId = randomUUID();
+  const job: ClipJob = {
+    emitter: new EventEmitter(),
+    status: "pending",
+    createdAt: Date.now(),
+  };
+  job.emitter.setMaxListeners(5);
+  clipJobs.set(jobId, job);
+  res.json({ jobId });
 
+  // Run analysis in background
+  runClipAnalysis(jobId, job, url, durations ?? [], req.log).catch(() => {});
+});
+
+// GET: SSE stream for a clip job
+router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
+  const job = clipJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  // If already finished, send result immediately
+  if (job.status === "done" && job.result) {
+    send({ type: "done", ...job.result });
+    res.end();
+    return;
+  }
+  if (job.status === "error") {
+    send({ type: "error", message: job.error });
+    res.end();
+    return;
+  }
+
+  const onStep = (d: any) => send({ type: "step", ...d });
+  const onDone = (d: any) => { send({ type: "done", ...d }); res.end(); };
+  const onError = (d: any) => { send({ type: "error", ...d }); res.end(); };
+
+  job.emitter.on("step", onStep);
+  job.emitter.on("done", onDone);
+  job.emitter.on("error", onError);
+
+  req.on("close", () => {
+    job.emitter.off("step", onStep);
+    job.emitter.off("done", onDone);
+    job.emitter.off("error", onError);
+  });
+});
+
+async function runClipAnalysis(
+  jobId: string,
+  job: ClipJob,
+  url: string,
+  durations: number[],
+  log: any,
+): Promise<void> {
+  const emit = (event: string, data: object) => job.emitter.emit(event, data);
+  const step = (step: string, status: "running" | "done" | "warn", message: string, data?: object) =>
+    emit("step", { step, status, message, ...data });
+
+  job.status = "running";
+
+  const clipDurations = durations.length > 0 ? durations : [60, 180, 300, 600];
   const tmpId = randomUUID();
   const subDir = join(DOWNLOAD_DIR, `subs_${tmpId}`);
 
-  try {
-    req.log.info({ url }, "Fetching metadata and transcript for clips analysis");
+  const durationLabels: Record<number, string> = {
+    60: "1 minute", 180: "3 minutes", 300: "5 minutes", 600: "10 minutes",
+  };
 
+  try {
     let transcript = "";
     let videoDuration = 0;
     let videoTitle = "";
     let videoDescription = "";
 
-    // 1. Get video metadata
+    // ── Step 1: Video metadata ─────────────────────────────────────────────
+    step("metadata", "running", "Fetching video info...");
     try {
       const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
       const meta = JSON.parse(metaJson);
@@ -600,155 +675,121 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
       videoTitle = meta.title ?? "";
       videoDescription = (meta.description ?? "").slice(0, 1000);
 
-      // Use chapters if available (rich timestamp data)
       if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
         transcript = meta.chapters
           .map((c: any) => `[${formatTime(c.start_time)}–${formatTime(c.end_time ?? c.start_time + 60)}] Chapter: ${c.title}`)
           .join("\n");
-        req.log.info({ chapCount: meta.chapters.length }, "Using chapter data as transcript");
       }
+
+      step("metadata", "done",
+        `"${videoTitle.slice(0, 60)}${videoTitle.length > 60 ? "…" : ""}"` +
+        (videoDuration ? ` · ${formatTime(videoDuration)}` : ""),
+        { videoTitle, videoDuration }
+      );
     } catch (e) {
-      req.log.warn({ e }, "Failed to fetch video metadata");
+      step("metadata", "warn", "Could not load full metadata — trying anyway");
     }
 
-    // 2. Try to get subtitles/captions — multiple strategies for robustness
+    // ── Step 2: Transcript ────────────────────────────────────────────────
     if (!transcript) {
+      step("transcript", "running", "Downloading transcript (English & Hindi)...");
       try {
         mkdirSync(subDir, { recursive: true });
 
-        // Strategy A: auto-subs matching English and Hindi variants
-        // Covers: en, en-US, en-GB, en-orig, hi, hi-Latn, etc.
-        const subArgs = [
+        await runYtDlp([
           "--write-subs", "--write-auto-subs",
           "--sub-lang", "en.*,hi.*",
           "--sub-format", "vtt",
-          "--skip-download",
-          "--no-warnings",
-          "--no-playlist",
-          "-o", join(subDir, "sub"),
-          url,
-        ];
-
-        await runYtDlp(subArgs).catch(() => {
-          // Strategy B: try without language restriction (get whatever is available)
-          return runYtDlp([
+          "--skip-download", "--no-warnings", "--no-playlist",
+          "-o", join(subDir, "sub"), url,
+        ]).catch(() =>
+          runYtDlp([
             "--write-auto-subs",
             "--sub-format", "vtt",
-            "--skip-download",
-            "--no-warnings",
-            "--no-playlist",
-            "-o", join(subDir, "sub"),
-            url,
-          ]).catch(() => {});
-        });
+            "--skip-download", "--no-warnings", "--no-playlist",
+            "-o", join(subDir, "sub"), url,
+          ]).catch(() => {})
+        );
 
-        // Scan the temp directory for any .vtt file produced
         let vttContent: string | null = null;
         if (existsSync(subDir)) {
           const created = readdirSync(subDir);
-          req.log.info({ created }, "Subtitle files created");
-          const vttFile = created
-            .map(f => join(subDir, f))
-            .find(f => f.endsWith(".vtt"));
-          if (vttFile) {
-            vttContent = readFileSync(vttFile, "utf8");
-          }
-          // Cleanup
-          for (const f of created) {
-            try { unlinkSync(join(subDir, f)); } catch {}
-          }
+          const vttFile = created.map(f => join(subDir, f)).find(f => f.endsWith(".vtt"));
+          if (vttFile) vttContent = readFileSync(vttFile, "utf8");
+          for (const f of created) try { unlinkSync(join(subDir, f)); } catch {}
           try { rmdirSync(subDir); } catch {}
         }
 
         if (vttContent) {
           const cues = parseVtt(vttContent);
-          // Deduplicate sequential identical lines (VTT often repeats)
           const deduped: VttCue[] = [];
           for (const cue of cues) {
-            if (deduped.length === 0 || deduped[deduped.length - 1].text !== cue.text) {
-              deduped.push(cue);
-            }
+            if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
           }
           transcript = cuesToText(deduped);
-          req.log.info({ cueCount: deduped.length }, "Successfully extracted transcript from subtitles");
+          step("transcript", "done", `Transcript ready — ${deduped.length} lines`, { hasTranscript: true });
+        } else {
+          step("transcript", "warn", "No transcript found — AI will use title & description", { hasTranscript: false });
         }
       } catch (e) {
-        req.log.warn({ e }, "Failed to get subtitles, proceeding without transcript");
+        step("transcript", "warn", "Transcript fetch failed — continuing without it", { hasTranscript: false });
       }
+    } else {
+      step("transcript", "done", `${transcript.split("\n").length} chapter markers found`, { hasTranscript: true });
     }
 
-    // 3. Build context and call AI
     const hasTranscript = transcript.length > 50;
     const validDurations = clipDurations.filter(d => !videoDuration || d < videoDuration);
 
-    const durationLabels: Record<number, string> = {
-      60: "1 minute", 180: "3 minutes", 300: "5 minutes", 600: "10 minutes",
-    };
-
-    // Determine how many clips per duration based on video length
-    const videoMinutes = videoDuration / 60;
-    let clipsPerDuration = 3;
-    if (videoMinutes >= 30) clipsPerDuration = 7;
-    else if (videoMinutes >= 15) clipsPerDuration = 5;
-    else if (videoMinutes >= 5) clipsPerDuration = 4;
+    // ── Step 3: AI analysis ───────────────────────────────────────────────
+    step("ai", "running", `AI is scanning every segment of the video for all ${validDurations.map(d => durationLabels[d] ?? `${Math.round(d/60)}min`).join(", ")} clips...`);
 
     const durationDescList = validDurations
       .map(d => `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`)
       .join("\n");
 
-    const systemPrompt = `You are an expert video content analyst specializing in identifying viral, engaging clip segments. You are fluent in both English and Hindi and can analyze transcripts in either language.
+    const systemPrompt = `You are an expert video content analyst specializing in viral, engaging clip segments. You are fluent in English and Hindi.
 
-Your task: For each requested clip duration, identify ALL high-quality segments in the video — not just one.
+Your task: Scan the ENTIRE video and identify EVERY genuinely engaging segment for each requested clip duration. There is no minimum or maximum limit — return as many clips as you find worthwhile. A 30-minute video might have 15+ quality 1-minute clips. Be comprehensive and thorough.
 
 Rules:
-1. For each duration, find ${clipsPerDuration} to ${clipsPerDuration + 3} non-overlapping segments (fewer only if the video is short or lacks enough content)
+1. Find ALL non-overlapping segments worth watching for each duration — no artificial cap
 2. Segments of the same duration must NOT overlap with each other
-3. Cover different parts of the video — spread clips across the full runtime
-4. Sort clips within each duration group by quality/engagement score (best first)
-5. endSec must equal startSec + durationSec exactly
+3. Cover different parts of the video — spread clips across the full runtime, don't cluster at the start
+4. Sort clips by quality/engagement score within each duration (best first)
+5. endSec = startSec + durationSec exactly
 6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}
-7. Prefer segments that start at natural speech/scene boundaries when transcript is available
-8. The transcript may be in Hindi, English, or a mix — understand it in whichever language it appears
-9. Always write your output (title, description, reason) in English regardless of the transcript language
+7. Start at natural speech/scene boundaries when transcript is available
+8. Understand the transcript in whatever language it's in (Hindi, English, or mixed)
+9. Write ALL output fields (title, description, reason) in English
 
-Respond with ONLY a valid JSON array (no markdown, no explanation). Each object:
-{
-  "durationSec": <number — the exact requested duration in seconds>,
-  "startSec": <number — clip start in seconds>,
-  "title": "<short compelling clip title in English>",
-  "description": "<2-3 sentences in English describing what happens and why it's engaging>",
-  "reason": "<one sentence in English: why this specific moment is great for this duration>"
-}`;
+Respond with ONLY a valid JSON array (no markdown, no extra text):
+[{"durationSec": <number>, "startSec": <number>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
 
     const userContent = `Video: "${videoTitle}"
-Total Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
+Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (timestamped — may be in Hindi, English, or mixed):\n${transcript.slice(0, 14000)}` : "\n[No transcript available — use the title, description, and typical video structure to estimate best segments]"}
+${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 14000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
 
-Find ALL best clips for each of these durations:
+Find every worthwhile clip for these durations:
 ${durationDescList}
 
-Remember: Return MULTIPLE clips per duration — aim for ${clipsPerDuration}–${clipsPerDuration + 3} clips per duration. Cover different sections of the video. Write all output in English.`;
-
-    req.log.info({ validDurations, hasTranscript, clipsPerDuration }, "Calling Gemini for multi-clip analysis");
-
-    if (!process.env.GEMINI_API_KEY) {
-      res.status(503).json({ error: "AI not configured", details: "GEMINI_API_KEY is not set" });
-      return;
-    }
+Be exhaustive — scan the whole video. Return every segment that would make a great standalone clip. No limit.`;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
     const result = await model.generateContent(systemPrompt + "\n\n" + userContent);
     const raw = result.response.text().trim();
-    let parsed: any[];
 
+    let parsed: any[];
     try {
       const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
       parsed = JSON.parse(cleaned);
       if (!Array.isArray(parsed)) parsed = [parsed];
     } catch (e) {
-      req.log.error({ raw, e }, "Failed to parse Gemini response as JSON");
-      res.status(500).json({ error: "Failed to parse AI response", raw });
+      log.error({ raw, e }, "Failed to parse Gemini response as JSON");
+      job.status = "error";
+      job.error = "Failed to parse AI response";
+      emit("error", { message: job.error });
       return;
     }
 
@@ -756,36 +797,41 @@ Remember: Return MULTIPLE clips per duration — aim for ${clipsPerDuration}–$
       .filter((c: any) => typeof c.startSec === "number" && typeof c.durationSec === "number")
       .map((c: any): BestClip => {
         const durSec = c.durationSec;
-        const durLabel = durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`;
         const startSec = Math.max(0, Math.round(c.startSec));
         const endSec = Math.min(videoDuration || 99999, startSec + durSec);
         return {
-          durationLabel: durLabel,
+          durationLabel: durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`,
           durationSec: durSec,
           startSec,
           endSec,
           startFormatted: formatTime(startSec),
           endFormatted: formatTime(endSec),
-          title: c.title ?? `Best ${durLabel} clip`,
+          title: c.title ?? `Best ${durationLabels[durSec] ?? durSec + "s"} clip`,
           description: c.description ?? "",
           reason: c.reason ?? "",
         };
       })
-      // Sort by duration first, then by start time within each duration
-      .sort((a: BestClip, b: BestClip) => a.durationSec !== b.durationSec
-        ? a.durationSec - b.durationSec
-        : a.startSec - b.startSec
-      );
+      .sort((a, b) => a.durationSec !== b.durationSec ? a.durationSec - b.durationSec : a.startSec - b.startSec);
 
-    req.log.info({ totalClips: clips.length }, "Clips analysis complete");
-    res.json({ clips, hasTranscript, videoDuration });
+    step("ai", "done", `Found ${clips.length} clips across ${validDurations.length} duration${validDurations.length !== 1 ? "s" : ""}`, { clipCount: clips.length });
+
+    log.info({ totalClips: clips.length }, "Clips analysis complete");
+
+    const resultData = { clips, hasTranscript, videoDuration };
+    job.status = "done";
+    job.result = resultData;
+    emit("done", resultData);
 
   } catch (err) {
-    req.log.error({ err }, "Failed to find best clips");
+    log.error({ err }, "Clip analysis failed");
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: "Failed to analyze video for clips", details: message });
+    job.status = "error";
+    job.error = message;
+    emit("error", { message });
+    // Cleanup subtitle dir if it exists
+    try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} rmdirSync(subDir); } } catch {}
   }
-});
+}
 
 // ─── Clip Download (specific time range) ─────────────────────────────────────
 
