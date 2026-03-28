@@ -144,7 +144,7 @@ export default function Home() {
           {/* Mode Tabs */}
           <motion.div layout className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1 mb-6 w-full max-w-xs sm:w-auto">
             <button
-              onClick={() => setMode("download")}
+              onClick={() => { setMode("download"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
                 "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 mode === "download"
@@ -156,7 +156,7 @@ export default function Home() {
               Download
             </button>
             <button
-              onClick={() => setMode("clips")}
+              onClick={() => { setMode("clips"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
                 "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 mode === "clips"
