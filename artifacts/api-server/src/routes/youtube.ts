@@ -283,8 +283,8 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
   const mergeFormats: VideoFormatOut[] = [];
   let audioFormat: VideoFormatOut | null = null;
 
+  // Single set tracks ALL heights that have been assigned a format card
   const seenHeights = new Set<number>();
-  const seenCombined = new Set<number>();
 
   // Find best audio itag for merging
   const bestAudioFmt =
@@ -301,9 +301,9 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
     const height: number | null = fmt.height ?? null;
 
     if (hasVideo && hasAudio) {
-      // Combined format (e.g., itag 18, 22)
-      if (height && seenCombined.has(height)) continue;
-      if (height) seenCombined.add(height);
+      // Combined format (e.g., itag 18, 22) — deduplicate by height
+      if (height && seenHeights.has(height)) continue;
+      if (height) seenHeights.add(height);
 
       const qual = height ? `${height}p` : (fmt.format_note ?? "unknown");
       videoAudioFormats.push({
@@ -320,7 +320,7 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
         hasAudio: true,
       });
     } else if (hasVideo && !hasAudio) {
-      // Video-only: offer as merge with best audio
+      // Video-only: offer as merge with best audio — skip if height already covered
       if (!height) continue;
       if (seenHeights.has(height)) continue;
       seenHeights.add(height);
@@ -428,6 +428,23 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
       description: (data.description ?? "").slice(0, 500) || null,
       formats,
     });
+
+    // Pre-warm stream URL cache in background so play is instant when user clicks
+    const bestCombined = formats.find(
+      (f) => f.hasVideo && f.hasAudio && !f.formatId.includes("+"),
+    );
+    if (bestCombined) {
+      const prewarmFormat = bestCombined.formatId;
+      const cacheKey = `${url}::${prewarmFormat}`;
+      if (!getCachedStreamUrl(cacheKey)) {
+        runYtDlp(["--get-url", "--no-playlist", "--no-warnings", "-f", prewarmFormat, url])
+          .then((rawUrls) => {
+            const cdnUrl = rawUrls.trim().split("\n")[0].trim();
+            if (cdnUrl && cdnUrl.startsWith("http")) setCachedStreamUrl(cacheKey, cdnUrl);
+          })
+          .catch(() => {}); // silently ignore pre-warm failures
+      }
+    }
   } catch (err) {
     req.log.error({ err }, "Failed to get video info");
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -672,6 +689,25 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
 // Gets the direct CDN URL for a format via yt-dlp --get-url and proxies it
 // with full Range request support so the browser <video> tag can seek.
 
+// Cache resolved CDN stream URLs to avoid re-running yt-dlp on every request
+// YouTube signed URLs typically expire after 6 hours; we cache for 25 minutes to be safe.
+const STREAM_CACHE_TTL_MS = 25 * 60 * 1000;
+const streamUrlCache = new Map<string, { cdnUrl: string; expiresAt: number }>();
+
+function getCachedStreamUrl(key: string): string | null {
+  const entry = streamUrlCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    streamUrlCache.delete(key);
+    return null;
+  }
+  return entry.cdnUrl;
+}
+
+function setCachedStreamUrl(key: string, cdnUrl: string): void {
+  streamUrlCache.set(key, { cdnUrl, expiresAt: Date.now() + STREAM_CACHE_TTL_MS });
+}
+
 router.get("/youtube/stream", async (req: Request, res: Response) => {
   const { url, formatId } = req.query as { url?: string; formatId?: string };
 
@@ -686,18 +722,28 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
       ? formatId
       : "best[ext=mp4]/best[height<=720][ext=mp4]/best";
 
-  try {
-    // --get-url returns one URL per line (one for combined, two for separate)
-    const rawUrls = await runYtDlp([
-      "--get-url",
-      "--no-playlist",
-      "--no-warnings",
-      "-f",
-      safeFormatId,
-      url,
-    ]);
+  const cacheKey = `${url}::${safeFormatId}`;
 
-    const streamUrl = rawUrls.trim().split("\n")[0].trim();
+  try {
+    // Check cache first — avoids 10-15s yt-dlp resolve on every request
+    let streamUrl = getCachedStreamUrl(cacheKey);
+
+    if (!streamUrl) {
+      // --get-url returns one URL per line (one for combined, two for separate)
+      const rawUrls = await runYtDlp([
+        "--get-url",
+        "--no-playlist",
+        "--no-warnings",
+        "-f",
+        safeFormatId,
+        url,
+      ]);
+      streamUrl = rawUrls.trim().split("\n")[0].trim();
+      if (streamUrl && streamUrl.startsWith("http")) {
+        setCachedStreamUrl(cacheKey, streamUrl);
+      }
+    }
+
     if (!streamUrl || !streamUrl.startsWith("http")) {
       res.status(502).json({ error: "Could not resolve stream URL" });
       return;
