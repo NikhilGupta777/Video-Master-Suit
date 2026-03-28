@@ -146,7 +146,14 @@ export function BestClips({ url }: Props) {
           } else if (msg.type === "done") {
             setClips(msg.clips ?? []);
             setHasTranscript(msg.hasTranscript ?? false);
-            if (!msg.clips?.length) setError("No clips could be identified for this video.");
+            if (!msg.clips?.length) {
+              const noTranscript = !msg.hasTranscript;
+              setError(
+                noTranscript
+                  ? "No clips found. This video has no transcript/subtitles, so the AI is working from title and description only — try a video with subtitles for better results."
+                  : "No clips could be identified. The video content may not have clearly distinct highlight segments, or the AI response could not be parsed. Please try again."
+              );
+            }
             setIsLoading(false);
             es.close();
             esRef.current = null;
