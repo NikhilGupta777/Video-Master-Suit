@@ -1381,22 +1381,26 @@ ${coverageGuidance}
 ${cutPointRules}
 
 Additional rules:
-1. No duration presets, no clip count cap — return every worthwhile segment
-2. Clips must NOT overlap each other
-3. Spread clips across the FULL runtime — start, every middle section, and end
-4. targetDuration = Math.round(endSec - startSec) — just reflect the actual clip length you chose
-5. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
-6. Write ALL output fields (title, description, reason) in English
+1. No duration presets, no clip count cap — return every worthwhile segment${customInstructions ? `\n2. MANDATORY TOPIC FILTER: The user has strictly requested only: "${customInstructions}". You MUST ONLY return clips that directly and clearly match this. Skip any segment that does not match. Return [] if nothing matches.` : ""}
+${customInstructions ? "3." : "2."} Clips must NOT overlap each other
+${customInstructions ? "4." : "3."} Spread clips across the FULL runtime — start, every middle section, and end
+${customInstructions ? "5." : "4."} targetDuration = Math.round(endSec - startSec) — just reflect the actual clip length you chose
+${customInstructions ? "6." : "5."} startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
+${customInstructions ? "7." : "6."} Write ALL output fields (title, description, reason) in English
 
 CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no extra text:
 [{"targetDuration": <endSec minus startSec rounded to nearest second>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence: what makes this a natural, complete standalone clip>"}]`;
 
+      const instructionBlock = customInstructions
+        ? `\n⚠️ MANDATORY TOPIC FILTER — READ THIS FIRST:\nThe user has given you a strict filter: "${customInstructions}"\nYou MUST ONLY return clips that directly and clearly match this filter. Skip EVERY segment that does not match, even if it is otherwise interesting or high-quality. If no segments match, return an empty array [].\n`
+        : "";
+
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
-${videoDescription ? `Description: ${videoDescription}\n` : ""}${customInstructions ? `\n🎯 SPECIAL FOCUS: ${customInstructions}\n` : ""}
+${videoDescription ? `Description: ${videoDescription}\n` : ""}${instructionBlock}
 ${transcriptBlock}
 
-Find EVERY worthwhile clip. For each one: read the transcript carefully, find where the idea begins, read forward until you reach the natural conclusion of that idea — that is your endSec. No duration constraints, no clip count limit. Cover the full ${videoDuration ? formatTime(videoDuration) : "video"}.`;
+Find EVERY clip that matches the mandatory filter above (or every worthwhile clip if no filter is given). For each one: read the transcript carefully, find where the idea begins, read forward until you reach the natural conclusion of that idea — that is your endSec. No duration constraints, no clip count limit. Cover the full ${videoDuration ? formatTime(videoDuration) : "video"}.`;
     } else {
       // ── MANUAL MODE: fixed duration categories chosen by user ─────────────
       const durationDescList = validDurations
@@ -1426,12 +1430,16 @@ Additional rules:
 CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, no explanation:
 [{"targetDuration": <integer category value from the list>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence English>"}]`;
 
+      const manualInstructionBlock = customInstructions
+        ? `\n⚠️ MANDATORY TOPIC FILTER — READ THIS FIRST:\nThe user has given you a strict filter: "${customInstructions}"\nYou MUST ONLY return clips that directly and clearly match this filter. Skip EVERY segment that does not match, even if it is otherwise interesting or high-quality. If no segments match the filter for a duration category, omit that category entirely.\n`
+        : "";
+
       userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
-${videoDescription ? `Description: ${videoDescription}\n` : ""}${customInstructions ? `\n🎯 SPECIAL FOCUS: ${customInstructions}\n` : ""}
+${videoDescription ? `Description: ${videoDescription}\n` : ""}${manualInstructionBlock}
 ${transcriptBlock}
 
-Find EVERY worthwhile clip for these categories:
+Find EVERY clip matching the mandatory filter (or every worthwhile clip if no filter) for these categories:
 ${durationDescList}
 
 For each clip: read the transcript to find where the idea begins (startSec) and where the speaker's complete thought finishes (endSec). The transcript is your source of truth for cut points — not the duration target. Scan the WHOLE video. No clip count limit.`;

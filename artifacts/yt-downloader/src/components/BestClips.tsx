@@ -43,6 +43,8 @@ interface DownloadState {
   message?: string;
   startedAt?: number;
   elapsed?: number;
+  eta?: string | null;
+  speed?: string | null;
 }
 
 const STEPS = ["metadata", "transcript", "ai"] as const;
@@ -70,6 +72,21 @@ function formatElapsed(seconds: number): string {
   return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
 }
 
+// Rough estimate of total analysis time based on video length
+function estimateTotalSec(videoDur: number): number {
+  const metaSec = 10;
+  const transcriptSec = 20;
+  // ~4s per minute of video for AI, min 45s
+  const aiSec = Math.max(45, Math.round(videoDur / 15));
+  return metaSec + transcriptSec + aiSec;
+}
+
+function formatRemaining(remainingSec: number): string {
+  if (remainingSec <= 0) return "finishing…";
+  if (remainingSec < 60) return `~${remainingSec}s left`;
+  return `~${Math.ceil(remainingSec / 60)}min left`;
+}
+
 export function BestClips({ url }: Props) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
@@ -86,6 +103,7 @@ export function BestClips({ url }: Props) {
     ai:         { status: "idle", message: "" },
   });
   const [analysisElapsed, setAnalysisElapsed] = useState(0);
+  const [videoDurationSec, setVideoDurationSec] = useState(0);
   const analysisStartRef = useRef<number | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const { toast } = useToast();
@@ -150,6 +168,7 @@ export function BestClips({ url }: Props) {
     setDownloadStates({});
     resetSteps();
     setAnalysisElapsed(0);
+    setVideoDurationSec(0);
     analysisStartRef.current = Date.now();
 
     try {
@@ -180,6 +199,10 @@ export function BestClips({ url }: Props) {
             const stepName = msg.step as StepName;
             if (STEPS.includes(stepName)) {
               updateStep(stepName, msg.status as StepStatus, msg.message, msg);
+              // Capture video duration from metadata step for ETA estimation
+              if (stepName === "metadata" && msg.videoDuration) {
+                setVideoDurationSec(msg.videoDuration);
+              }
             }
           } else if (msg.type === "done") {
             setClips(msg.clips ?? []);
@@ -241,7 +264,7 @@ export function BestClips({ url }: Props) {
         const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`).then(r => r.json());
 
         if (prog.status === "done") {
-          setDownload(key, { status: "done", percent: 100 });
+          setDownload(key, { status: "done", percent: 100, eta: null, speed: null });
           const link = document.createElement("a");
           link.href = `${BASE}/api/youtube/file/${jobId}`;
           link.download = `${clip.title}.mp4`;
@@ -257,7 +280,9 @@ export function BestClips({ url }: Props) {
         setDownload(key, {
           status: "downloading",
           percent: pct,
-          message: prog.status === "merging" ? "Merging…" : pct > 0 ? `Downloading… ${pct}%` : "Preparing…",
+          eta: prog.eta ?? null,
+          speed: prog.speed ?? null,
+          message: prog.status === "merging" ? "Merging…" : pct > 0 ? `${pct}%` : "Preparing…",
         });
       }
       throw new Error("Download timed out");
@@ -388,12 +413,20 @@ export function BestClips({ url }: Props) {
             exit={{ opacity: 0 }}
             className="glass-panel rounded-2xl p-5 space-y-3"
           >
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-white/50 text-xs font-semibold uppercase tracking-widest">What's happening</p>
-              <span className="flex items-center gap-1 text-white/40 text-xs font-mono">
-                <Timer className="w-3 h-3" />{formatElapsed(analysisElapsed)}
-              </span>
-            </div>
+            {(() => {
+              const totalEst = estimateTotalSec(videoDurationSec);
+              const remaining = Math.max(0, totalEst - analysisElapsed);
+              const allDone = STEPS.every(s => steps[s].status === "done" || steps[s].status === "warn");
+              return (
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-white/50 text-xs font-semibold uppercase tracking-widest">What's happening</p>
+                  <span className="flex items-center gap-1.5 text-white/50 text-xs font-mono">
+                    <Timer className="w-3 h-3 shrink-0" />
+                    {allDone ? "finishing…" : formatRemaining(remaining)}
+                  </span>
+                </div>
+              );
+            })()}
             {STEPS.map((name, idx) => {
               const s = steps[name];
               const meta = STEP_META[name];
@@ -559,14 +592,17 @@ export function BestClips({ url }: Props) {
                                   <span className="text-white/40">{formatDuration(clip.endSec - clip.startSec)}</span>
                                 </div>
                                 {dl.status === "downloading" && (
-                                  <p className="text-primary/70 text-xs mt-1 font-medium flex items-center gap-1">
-                                    {dl.message}
-                                    {dl.elapsed != null && dl.elapsed > 0 && (
-                                      <span className="text-white/30 font-mono ml-1 flex items-center gap-0.5">
-                                        <Timer className="w-2.5 h-2.5" />{formatElapsed(dl.elapsed)}
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    <p className="text-primary/70 text-xs font-medium">{dl.message}</p>
+                                    {dl.eta && (
+                                      <span className="flex items-center gap-0.5 text-white/50 text-xs font-mono">
+                                        <Timer className="w-2.5 h-2.5" />{dl.eta} left
                                       </span>
                                     )}
-                                  </p>
+                                    {dl.speed && (
+                                      <span className="text-white/35 text-xs">{dl.speed}</span>
+                                    )}
+                                  </div>
                                 )}
                                 {dl.status === "error" && dl.message && (
                                   <p className="text-red-400 text-xs mt-1">{dl.message}</p>
