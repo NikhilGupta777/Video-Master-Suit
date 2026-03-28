@@ -69,10 +69,18 @@ Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` 
 - Entry: `src/index.ts` — reads `PORT`, starts Express
 - App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
 - Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
+- YouTube routes: `src/routes/youtube.ts` — uses **yt-dlp** (via `python3 -m yt_dlp`) for all YouTube operations; requires Python 3 + yt-dlp installed (`python3 -m pip install yt-dlp`). YouTube downloading previously used `youtubei.js` but it was blocked by YouTube CDNs (HTTP 403). yt-dlp handles all clients/decryption internally and is not blocked.
 - Depends on: `@workspace/db`, `@workspace/api-zod`
 - `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
+- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.mjs`)
 - Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+
+**Important setup**: Python 3 and yt-dlp must be installed for YouTube routes to work:
+```
+nix-env -iA nixpkgs.python310
+python3 -m ensurepip
+python3 -m pip install yt-dlp
+```
 
 ### `lib/db` (`@workspace/db`)
 
