@@ -1482,15 +1482,27 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
           ),
         );
         const actualMins = Math.round((endSec - startSec) / 60);
-        // For the open-ended >5 min category, use a friendly label with actual length
+        const actualDur = endSec - startSec;
+
+        // In auto mode the AI returns the clip's real duration as targetDur.
+        // Bucket it into one of the UI preset buckets so grouping is clean.
+        let bucketedDur: number;
+        if (autoMode) {
+          if (targetDur === 9999 || actualDur > 300) bucketedDur = 9999;
+          else if (actualDur > 120) bucketedDur = 180;
+          else bucketedDur = 60;
+        } else {
+          bucketedDur = targetDur;
+        }
+
         const durationLabel =
-          targetDur === 9999
+          bucketedDur === 9999
             ? `> 5 min (${actualMins}m)`
-            : (durationLabels[targetDur] ??
-              `~${Math.round(targetDur / 60)} min`);
+            : (durationLabels[bucketedDur] ??
+              `~${Math.round(bucketedDur / 60)} min`);
         return {
           durationLabel,
-          durationSec: targetDur,
+          durationSec: bucketedDur,
           startSec,
           endSec,
           startFormatted: formatTime(startSec),

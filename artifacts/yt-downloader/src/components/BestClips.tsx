@@ -149,6 +149,8 @@ export function BestClips({ url }: Props) {
     setExpandedClip(null);
     setDownloadStates({});
     resetSteps();
+    setAnalysisElapsed(0);
+    analysisStartRef.current = Date.now();
 
     try {
       // 1. Start the job
@@ -190,11 +192,13 @@ export function BestClips({ url }: Props) {
                   : "No clips could be identified. The video content may not have clearly distinct highlight segments, or the AI response could not be parsed. Please try again."
               );
             }
+            analysisStartRef.current = null;
             setIsLoading(false);
             es.close();
             esRef.current = null;
           } else if (msg.type === "error") {
             setError(msg.message ?? "Analysis failed");
+            analysisStartRef.current = null;
             setIsLoading(false);
             es.close();
             esRef.current = null;
@@ -204,6 +208,7 @@ export function BestClips({ url }: Props) {
 
       es.onerror = () => {
         setError("Connection lost during analysis. Please try again.");
+        analysisStartRef.current = null;
         setIsLoading(false);
         es.close();
         esRef.current = null;
@@ -218,7 +223,7 @@ export function BestClips({ url }: Props) {
     const key = clipKey(clip);
     if (downloadStates[key]?.status === "downloading") return;
 
-    setDownload(key, { status: "downloading", percent: 0, message: "Starting…" });
+    setDownload(key, { status: "downloading", percent: 0, message: "Starting…", startedAt: Date.now() });
 
     try {
       const startRes = await fetch(`${BASE}/api/youtube/download-clip`, {
@@ -383,7 +388,12 @@ export function BestClips({ url }: Props) {
             exit={{ opacity: 0 }}
             className="glass-panel rounded-2xl p-5 space-y-3"
           >
-            <p className="text-white/50 text-xs font-semibold uppercase tracking-widest mb-1">What's happening</p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-white/50 text-xs font-semibold uppercase tracking-widest">What's happening</p>
+              <span className="flex items-center gap-1 text-white/40 text-xs font-mono">
+                <Timer className="w-3 h-3" />{formatElapsed(analysisElapsed)}
+              </span>
+            </div>
             {STEPS.map((name, idx) => {
               const s = steps[name];
               const meta = STEP_META[name];
@@ -548,8 +558,15 @@ export function BestClips({ url }: Props) {
                                   <span className="text-white/30">·</span>
                                   <span className="text-white/40">{formatDuration(clip.endSec - clip.startSec)}</span>
                                 </div>
-                                {dl.status === "downloading" && dl.message && (
-                                  <p className="text-primary/70 text-xs mt-1 font-medium">{dl.message}</p>
+                                {dl.status === "downloading" && (
+                                  <p className="text-primary/70 text-xs mt-1 font-medium flex items-center gap-1">
+                                    {dl.message}
+                                    {dl.elapsed != null && dl.elapsed > 0 && (
+                                      <span className="text-white/30 font-mono ml-1 flex items-center gap-0.5">
+                                        <Timer className="w-2.5 h-2.5" />{formatElapsed(dl.elapsed)}
+                                      </span>
+                                    )}
+                                  </p>
                                 )}
                                 {dl.status === "error" && dl.message && (
                                   <p className="text-red-400 text-xs mt-1">{dl.message}</p>
