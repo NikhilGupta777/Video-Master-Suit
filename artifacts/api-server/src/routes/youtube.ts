@@ -616,10 +616,11 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
       try {
         mkdirSync(subDir, { recursive: true });
 
-        // Strategy A: auto-subs with wildcard English match (covers en, en-US, en-GB, a.en, etc.)
+        // Strategy A: auto-subs matching English and Hindi variants
+        // Covers: en, en-US, en-GB, en-orig, hi, hi-Latn, etc.
         const subArgs = [
           "--write-subs", "--write-auto-subs",
-          "--sub-lang", "en.*",
+          "--sub-lang", "en.*,hi.*",
           "--sub-format", "vtt",
           "--skip-download",
           "--no-warnings",
@@ -695,7 +696,7 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
       .map(d => `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`)
       .join("\n");
 
-    const systemPrompt = `You are an expert video content analyst specializing in identifying viral, engaging clip segments.
+    const systemPrompt = `You are an expert video content analyst specializing in identifying viral, engaging clip segments. You are fluent in both English and Hindi and can analyze transcripts in either language.
 
 Your task: For each requested clip duration, identify ALL high-quality segments in the video — not just one.
 
@@ -707,25 +708,27 @@ Rules:
 5. endSec must equal startSec + durationSec exactly
 6. startSec ≥ 0, endSec ≤ ${videoDuration || 99999}
 7. Prefer segments that start at natural speech/scene boundaries when transcript is available
+8. The transcript may be in Hindi, English, or a mix — understand it in whichever language it appears
+9. Always write your output (title, description, reason) in English regardless of the transcript language
 
 Respond with ONLY a valid JSON array (no markdown, no explanation). Each object:
 {
   "durationSec": <number — the exact requested duration in seconds>,
   "startSec": <number — clip start in seconds>,
-  "title": "<short compelling clip title>",
-  "description": "<2-3 sentences describing what happens and why it's engaging>",
-  "reason": "<one sentence: why this specific moment is great for this duration>"
+  "title": "<short compelling clip title in English>",
+  "description": "<2-3 sentences in English describing what happens and why it's engaging>",
+  "reason": "<one sentence in English: why this specific moment is great for this duration>"
 }`;
 
     const userContent = `Video: "${videoTitle}"
 Total Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (timestamped):\n${transcript.slice(0, 14000)}` : "\n[No transcript available — use the title, description, and typical video structure to estimate best segments]"}
+${hasTranscript ? `\nTranscript (timestamped — may be in Hindi, English, or mixed):\n${transcript.slice(0, 14000)}` : "\n[No transcript available — use the title, description, and typical video structure to estimate best segments]"}
 
 Find ALL best clips for each of these durations:
 ${durationDescList}
 
-Remember: Return MULTIPLE clips per duration — aim for ${clipsPerDuration}–${clipsPerDuration + 3} clips per duration. Cover different sections of the video.`;
+Remember: Return MULTIPLE clips per duration — aim for ${clipsPerDuration}–${clipsPerDuration + 3} clips per duration. Cover different sections of the video. Write all output in English.`;
 
     req.log.info({ validDurations, hasTranscript, clipsPerDuration }, "Calling Gemini for multi-clip analysis");
 
