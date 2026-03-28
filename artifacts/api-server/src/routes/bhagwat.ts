@@ -403,11 +403,12 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
 // ── Render job store ──────────────────────────────────────────────────────────
 interface RenderJob {
   emitter: EventEmitter;
-  status: "pending" | "running" | "done" | "error";
+  status: "pending" | "running" | "done" | "error" | "expired";
   outputPath?: string;
   filename?: string;
   error?: string;
   createdAt: number;
+  deleteScheduled?: boolean;
 }
 const renderJobs = new Map<string, RenderJob>();
 
@@ -468,14 +469,38 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
   req.on("close", () => job.emitter.removeAllListeners());
 });
 
+const RENDER_DELETE_MS = 10 * 60 * 1000; // 10 minutes after download
+
 router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   const job = renderJobs.get(req.params.jobId);
   if (!job?.outputPath || !existsSync(job.outputPath)) {
-    res.status(404).json({ error: "File not ready" });
+    res.status(404).json({ error: "File not ready or already deleted" });
     return;
   }
   res.download(job.outputPath, job.filename ?? "bhagwat_video.mp4");
+
+  // Schedule file + job deletion 10 minutes after download is triggered
+  if (!job.deleteScheduled) {
+    job.deleteScheduled = true;
+    setTimeout(() => {
+      try { unlinkSync(job.outputPath!); } catch {}
+      job.outputPath = undefined;
+      job.status = "expired";
+      setTimeout(() => renderJobs.delete(req.params.jobId), 60_000);
+    }, RENDER_DELETE_MS);
+  }
 });
+
+// Sweep render jobs older than 2 hours from memory (safety net)
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, job] of renderJobs.entries()) {
+    if (job.createdAt < cutoff) {
+      if (job.outputPath) { try { unlinkSync(job.outputPath); } catch {} }
+      renderJobs.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
 
 // ── runBhagwatAnalysis ────────────────────────────────────────────────────────
 async function runBhagwatAnalysis(
