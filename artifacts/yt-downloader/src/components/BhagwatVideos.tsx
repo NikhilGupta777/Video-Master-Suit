@@ -207,13 +207,13 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
         setPhase("analyzed");
         es.close();
       });
-      es.addEventListener("error", e => {
-        const d = JSON.parse(e.data);
+      es.addEventListener("jobError", e => {
+        const d = JSON.parse((e as MessageEvent).data);
         setErrorMsg(d.message ?? "Analysis failed");
         setPhase("error");
         es.close();
       });
-      es.onerror = () => { setErrorMsg("Connection error during analysis"); setPhase("error"); es.close(); };
+      es.onerror = () => { setErrorMsg("Connection error during analysis — please try again"); setPhase("error"); es.close(); };
     } catch (err: any) {
       setErrorMsg(err.message ?? "Failed to start analysis");
       setPhase("error");
@@ -249,13 +249,13 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
         setPhase("done");
         es.close();
       });
-      es.addEventListener("error", e => {
-        const d = JSON.parse(e.data);
+      es.addEventListener("jobError", e => {
+        const d = JSON.parse((e as MessageEvent).data);
         setErrorMsg(d.message ?? "Render failed");
         setPhase("error");
         es.close();
       });
-      es.onerror = () => { setErrorMsg("Connection error during render"); setPhase("error"); es.close(); };
+      es.onerror = () => { setErrorMsg("Connection error during render — please try again"); setPhase("error"); es.close(); };
     } catch (err: any) {
       setErrorMsg(err.message ?? "Failed to start render");
       setPhase("error");

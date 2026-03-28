@@ -344,7 +344,7 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
     return;
   }
   if (job.status === "error") {
-    send("error", { message: job.error });
+    send("jobError", { message: job.error });
     res.end();
     return;
   }
@@ -353,8 +353,8 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
     send("done", d);
     res.end();
   });
-  job.emitter.on("error", (d) => {
-    send("error", d);
+  job.emitter.on("jobError", (d) => {
+    send("jobError", d);
     res.end();
   });
   req.on("close", () => job.emitter.removeAllListeners());
@@ -412,7 +412,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     return;
   }
   if (job.status === "error") {
-    send("error", { message: job.error });
+    send("jobError", { message: job.error });
     res.end();
     return;
   }
@@ -421,8 +421,8 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     send("done", d);
     res.end();
   });
-  job.emitter.on("error", (d) => {
-    send("error", d);
+  job.emitter.on("jobError", (d) => {
+    send("jobError", d);
     res.end();
   });
   req.on("close", () => job.emitter.removeAllListeners());
@@ -738,9 +738,10 @@ Plan the full image timeline for this video. Write specific image prompts for ea
     emit("done", resultData);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[bhagwat/analyze] Error:", message);
     job.status = "error";
     job.error = message;
-    emit("error", { message });
+    emit("jobError", { message });
     try {
       if (existsSync(subDir)) {
         for (const f of readdirSync(subDir))
@@ -780,23 +781,34 @@ async function runBhagwatRender(
       percent: 3,
       message: "Downloading audio from YouTube…",
     });
-    await runYtDlp([
-      "-f",
-      "bestaudio",
-      "--no-playlist",
-      "--no-warnings",
-      "-o",
-      `${audioPath}.%(ext)s`,
-      url,
-    ]);
+
+    let ytdlpError = "";
+    try {
+      await runYtDlp([
+        "-f", "bestaudio/best",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-check-certificates",
+        "-o", `${audioPath}.%(ext)s`,
+        url,
+      ]);
+    } catch (err) {
+      ytdlpError = err instanceof Error ? err.message : String(err);
+      console.error("[bhagwat/render] yt-dlp audio download error:", ytdlpError);
+    }
 
     const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
       f.startsWith(basename(audioPath)),
     );
     const audioFile =
       audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
-    if (!audioFile || !existsSync(audioFile))
-      throw new Error("Failed to download audio from YouTube");
+    if (!audioFile || !existsSync(audioFile)) {
+      throw new Error(
+        ytdlpError
+          ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
+          : "Failed to download audio from YouTube — please check the URL and try again",
+      );
+    }
 
     // ── 2. Generate images for all segments ───────────────────────────────────
     emit("progress", {
@@ -948,9 +960,10 @@ async function runBhagwatRender(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[bhagwat/render] Error:", message);
     job.status = "error";
     job.error = message;
-    emit("error", { message });
+    emit("jobError", { message });
     try {
       unlinkSync(concatPath);
     } catch {}
