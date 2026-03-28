@@ -1397,7 +1397,7 @@ ${cutPointRules}
 Additional rules:
 1. No duration presets, no clip count cap — return every worthwhile segment${customInstructions ? `\n2. MANDATORY TOPIC FILTER: The user has strictly requested only: "${customInstructions}". You MUST ONLY return clips that directly and clearly match this. Skip any segment that does not match. Return [] if nothing matches.` : ""}
 ${customInstructions ? "3." : "2."} Clips must NOT overlap each other
-${customInstructions ? "4." : "3."} Spread clips across the FULL runtime — start, every middle section, and end
+${customInstructions ? "4." : "3."} ${customInstructions ? "Scan the full video from start to end — but ONLY return clips that match the topic filter above. Never add off-topic clips to fill coverage." : "Spread clips across the FULL runtime — start, every middle section, and end"}
 ${customInstructions ? "5." : "4."} targetDuration = Math.round(endSec - startSec) — just reflect the actual clip length you chose
 ${customInstructions ? "6." : "5."} startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
 ${customInstructions ? "7." : "6."} Write ALL output fields (title, description, reason) in English
@@ -1436,7 +1436,7 @@ ${cutPointRules}
 Additional rules:
 1. Find ALL non-overlapping segments per category — zero artificial cap${customInstructions ? `\n2. MANDATORY TOPIC FILTER: The user has strictly requested only: "${customInstructions}". You MUST ONLY return clips that directly and clearly match this. Skip any segment that does not match. Return [] if nothing matches.` : ""}
 ${customInstructions ? "3." : "2."} Segments of the same targetDuration must NOT overlap (across different targetDurations, overlap is fine)
-${customInstructions ? "4." : "3."} Spread clips across the ENTIRE runtime — don't cluster at the beginning
+${customInstructions ? "4." : "3."} ${customInstructions ? "Scan the full video from start to end — but ONLY return clips matching the topic filter. Never add off-topic clips to fill coverage." : "Spread clips across the ENTIRE runtime — don't cluster at the beginning"}
 ${customInstructions ? "5." : "4."} startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
 ${customInstructions ? "6." : "5."} Understand the transcript in whatever language it is (Hindi, English, mixed)
 ${customInstructions ? "7." : "6."} Write ALL output fields (title, description, reason) in English
@@ -1459,10 +1459,11 @@ ${durationDescList}
 For each clip: read the transcript to find where the idea begins (startSec) and where the speaker's complete thought finishes (endSec). The transcript is your source of truth for cut points — not the duration target. Scan the WHOLE video. No clip count limit.`;
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
-    const result = await model.generateContent(
-      systemPrompt + "\n\n" + userContent,
-    );
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-pro",
+      systemInstruction: systemPrompt,
+    });
+    const result = await model.generateContent(userContent);
     const raw = result.response.text().trim();
 
     // Robust parsing — handles markdown fences, surrounding text, type coercion
