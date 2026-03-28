@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFile
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+import { get as httpsGet } from "https";
+import { get as httpGet } from "http";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const router: IRouter = Router();
@@ -96,6 +98,88 @@ function runYtDlp(args: string[]): Promise<string> {
     proc.on("close", (code) => {
       if (code === 0) resolve(stdout);
       else reject(new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`));
+    });
+    proc.on("error", (err) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
+  });
+}
+
+// Fetch a URL and return its body as a string
+function fetchUrl(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const get = url.startsWith("https") ? httpsGet : httpGet;
+    let data = "";
+    const req = get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchUrl(res.headers.location).then(resolve).catch(reject);
+        return;
+      }
+      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      res.on("end", () => resolve(data));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error("Subtitle fetch timed out")); });
+  });
+}
+
+// Pick the best subtitle URL from yt-dlp dump-json subtitle maps
+function pickBestSubtitleUrl(
+  subtitles: Record<string, any[]>,
+  automaticCaptions: Record<string, any[]>,
+  videoLanguage?: string,
+): string | null {
+  const findVttUrl = (tracks: any[]): string | null => {
+    if (!Array.isArray(tracks)) return null;
+    // Prefer explicit VTT ext, then URL containing fmt=vtt
+    const vtt = tracks.find((t: any) => t.ext === "vtt") ??
+                tracks.find((t: any) => typeof t.url === "string" && t.url.includes("fmt=vtt"));
+    return vtt?.url ?? null;
+  };
+
+  // Language priority: detected video language first, then Hindi variants, then English, then anything
+  const preferredLangs = [
+    ...(videoLanguage ? [videoLanguage] : []),
+    "hi", "hi-IN", "hi-Latn", "hi-orig",
+    "en", "en-US", "en-GB", "en-orig",
+  ];
+
+  // 1) Manual subtitles (highest quality)
+  for (const lang of preferredLangs) {
+    if (subtitles[lang]?.length) {
+      const u = findVttUrl(subtitles[lang]);
+      if (u) return u;
+    }
+  }
+  // Any manual subtitle language
+  for (const tracks of Object.values(subtitles)) {
+    if (tracks?.length) { const u = findVttUrl(tracks); if (u) return u; }
+  }
+
+  // 2) Auto-generated captions
+  for (const lang of preferredLangs) {
+    if (automaticCaptions[lang]?.length) {
+      const u = findVttUrl(automaticCaptions[lang]);
+      if (u) return u;
+    }
+  }
+  // Any auto-caption language
+  for (const tracks of Object.values(automaticCaptions)) {
+    if (tracks?.length) { const u = findVttUrl(tracks); if (u) return u; }
+  }
+  return null;
+}
+
+// Run yt-dlp WITHOUT the JS runtime args (safe for subtitle-only fetches)
+function runYtDlpForSubs(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-600) || `yt-dlp subs exited ${code}`));
     });
     proc.on("error", (err) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
   });
@@ -665,6 +749,7 @@ async function runClipAnalysis(
     let videoDuration = 0;
     let videoTitle = "";
     let videoDescription = "";
+    let metaSubtitleUrl: string | null = null;
 
     // ── Step 1: Video metadata ─────────────────────────────────────────────
     step("metadata", "running", "Fetching video info...");
@@ -674,6 +759,12 @@ async function runClipAnalysis(
       videoDuration = meta.duration ?? 0;
       videoTitle = meta.title ?? "";
       videoDescription = (meta.description ?? "").slice(0, 1000);
+
+      // Extract subtitle URL from metadata so Step 2 can use it without another yt-dlp call
+      const subs: Record<string, any[]> = meta.subtitles ?? {};
+      const autoCaps: Record<string, any[]> = meta.automatic_captions ?? {};
+      const videoLang: string | undefined = meta.language ?? meta.original_language ?? undefined;
+      metaSubtitleUrl = pickBestSubtitleUrl(subs, autoCaps, videoLang);
 
       if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
         transcript = meta.chapters
@@ -692,47 +783,64 @@ async function runClipAnalysis(
 
     // ── Step 2: Transcript ────────────────────────────────────────────────
     if (!transcript) {
-      step("transcript", "running", "Downloading transcript (English & Hindi)...");
-      try {
-        mkdirSync(subDir, { recursive: true });
+      step("transcript", "running", "Downloading transcript...");
+      let vttContent: string | null = null;
 
-        await runYtDlp([
-          "--write-subs", "--write-auto-subs",
-          "--sub-lang", "en.*,hi.*",
-          "--sub-format", "vtt",
-          "--skip-download", "--no-warnings", "--no-playlist",
-          "-o", join(subDir, "sub"), url,
-        ]).catch(() =>
-          runYtDlp([
-            "--write-auto-subs",
+      // Approach 1: Direct URL fetch from metadata subtitle map (fastest, no extra yt-dlp)
+      if (metaSubtitleUrl && !vttContent) {
+        try {
+          const raw = await fetchUrl(metaSubtitleUrl);
+          if (raw.includes("WEBVTT") || raw.includes("-->")) vttContent = raw;
+        } catch (_e) {}
+      }
+
+      // Approach 2: yt-dlp subtitle download WITHOUT js-runtime args (they break sub fetching)
+      if (!vttContent) {
+        try {
+          mkdirSync(subDir, { recursive: true });
+          const subBase = join(subDir, "sub");
+
+          // Try 1: language-specific (en + hi + any auto)
+          await runYtDlpForSubs([
+            "--write-subs", "--write-auto-subs",
+            "--sub-lang", "hi.*,en.*",
             "--sub-format", "vtt",
             "--skip-download", "--no-warnings", "--no-playlist",
-            "-o", join(subDir, "sub"), url,
-          ]).catch(() => {})
-        );
+            "-o", subBase, url,
+          ]).catch(() => {});
 
-        let vttContent: string | null = null;
-        if (existsSync(subDir)) {
-          const created = readdirSync(subDir);
-          const vttFile = created.map(f => join(subDir, f)).find(f => f.endsWith(".vtt"));
-          if (vttFile) vttContent = readFileSync(vttFile, "utf8");
-          for (const f of created) try { unlinkSync(join(subDir, f)); } catch {}
-          try { rmdirSync(subDir); } catch {}
-        }
-
-        if (vttContent) {
-          const cues = parseVtt(vttContent);
-          const deduped: VttCue[] = [];
-          for (const cue of cues) {
-            if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
+          // Try 2: any language auto-subs if first attempt got nothing
+          if (!readdirSync(subDir).some(f => f.endsWith(".vtt"))) {
+            await runYtDlpForSubs([
+              "--write-subs", "--write-auto-subs",
+              "--sub-format", "vtt",
+              "--skip-download", "--no-warnings", "--no-playlist",
+              "-o", subBase, url,
+            ]).catch(() => {});
           }
-          transcript = cuesToText(deduped);
-          step("transcript", "done", `Transcript ready — ${deduped.length} lines`, { hasTranscript: true });
-        } else {
-          step("transcript", "warn", "No transcript found — AI will use title & description", { hasTranscript: false });
+
+          if (existsSync(subDir)) {
+            const files = readdirSync(subDir);
+            const vttFile = files.map(f => join(subDir, f)).find(f => f.endsWith(".vtt"));
+            if (vttFile) vttContent = readFileSync(vttFile, "utf8");
+            for (const f of files) try { unlinkSync(join(subDir, f)); } catch {}
+            try { rmdirSync(subDir); } catch {}
+          }
+        } catch (_e) {
+          try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} rmdirSync(subDir); } } catch {}
         }
-      } catch (e) {
-        step("transcript", "warn", "Transcript fetch failed — continuing without it", { hasTranscript: false });
+      }
+
+      if (vttContent) {
+        const cues = parseVtt(vttContent);
+        const deduped: VttCue[] = [];
+        for (const cue of cues) {
+          if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
+        }
+        transcript = cuesToText(deduped);
+        step("transcript", "done", `Transcript ready — ${deduped.length} lines`, { hasTranscript: true });
+      } else {
+        step("transcript", "warn", "No transcript found — AI will use title & description", { hasTranscript: false });
       }
     } else {
       step("transcript", "done", `${transcript.split("\n").length} chapter markers found`, { hasTranscript: true });
