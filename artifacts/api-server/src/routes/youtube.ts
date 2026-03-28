@@ -982,15 +982,14 @@ async function runClipAnalysis(
 
   job.status = "running";
 
-  const clipDurations = durations.length > 0 ? durations : [60, 180, 300];
+  const clipDurations = durations.length > 0 ? durations : [60, 180];
   const tmpId = randomUUID();
   const subDir = join(DOWNLOAD_DIR, `subs_${tmpId}`);
 
   const durationLabels: Record<number, string> = {
     60: "1 minute",
     180: "3 minutes",
-    300: "5 minutes",
-    9999: "> 5 minutes (AI picks exact length)",
+    9999: "≥ 5 minutes (AI picks exact length)",
   };
 
   try {
