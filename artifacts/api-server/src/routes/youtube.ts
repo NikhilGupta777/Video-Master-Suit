@@ -1,7 +1,16 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { spawn } from "child_process";
 import { EventEmitter } from "events";
-import { existsSync, mkdirSync, unlinkSync, statSync, createReadStream, readFileSync, readdirSync, rmdirSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  unlinkSync,
+  statSync,
+  createReadStream,
+  readFileSync,
+  readdirSync,
+  rmdirSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
@@ -38,10 +47,15 @@ cleanupOldFiles();
 
 // Auto-delete a job's file 5 minutes after it's ready
 const AUTO_DELETE_MS = 5 * 60 * 1000;
-function scheduleAutoDelete(jobId: string, jobRef: { filePath: string | null; status: string }) {
+function scheduleAutoDelete(
+  jobId: string,
+  jobRef: { filePath: string | null; status: string },
+) {
   setTimeout(() => {
     if (jobRef.filePath) {
-      try { unlinkSync(jobRef.filePath); } catch {}
+      try {
+        unlinkSync(jobRef.filePath);
+      } catch {}
       jobRef.filePath = null;
     }
     jobRef.status = "expired";
@@ -82,24 +96,39 @@ const jobs = new Map<string, DownloadJob>();
 
 // Base args applied to every yt-dlp call for proper JS challenge solving
 const BASE_YTDLP_ARGS = [
-  "--js-runtimes", "node",
-  "--remote-components", "ejs:github",
+  "--js-runtimes",
+  "node",
+  "--remote-components",
+  "ejs:github",
 ];
 
 function runYtDlp(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
-      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    });
+    const proc = spawn(
+      "python3",
+      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
+      {
+        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+    );
     let stdout = "";
     let stderr = "";
-    proc.stdout?.on("data", (d) => { stdout += d.toString(); });
-    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.stdout?.on("data", (d) => {
+      stdout += d.toString();
+    });
+    proc.stderr?.on("data", (d) => {
+      stderr += d.toString();
+    });
     proc.on("close", (code) => {
       if (code === 0) resolve(stdout);
-      else reject(new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`));
+      else
+        reject(
+          new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`),
+        );
     });
-    proc.on("error", (err) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
+    proc.on("error", (err) =>
+      reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
+    );
   });
 }
 
@@ -108,17 +137,31 @@ function fetchUrl(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const get = url.startsWith("https") ? httpsGet : httpGet;
     let data = "";
-    const req = get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchUrl(res.headers.location).then(resolve).catch(reject);
-        return;
-      }
-      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-      res.on("end", () => resolve(data));
-      res.on("error", reject);
-    });
+    const req = get(
+      url,
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      (res) => {
+        if (
+          res.statusCode &&
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          fetchUrl(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        res.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+        });
+        res.on("end", () => resolve(data));
+        res.on("error", reject);
+      },
+    );
     req.on("error", reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error("Subtitle fetch timed out")); });
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error("Subtitle fetch timed out"));
+    });
   });
 }
 
@@ -131,16 +174,25 @@ function pickBestSubtitleUrl(
   const findVttUrl = (tracks: any[]): string | null => {
     if (!Array.isArray(tracks)) return null;
     // Prefer explicit VTT ext, then URL containing fmt=vtt
-    const vtt = tracks.find((t: any) => t.ext === "vtt") ??
-                tracks.find((t: any) => typeof t.url === "string" && t.url.includes("fmt=vtt"));
+    const vtt =
+      tracks.find((t: any) => t.ext === "vtt") ??
+      tracks.find(
+        (t: any) => typeof t.url === "string" && t.url.includes("fmt=vtt"),
+      );
     return vtt?.url ?? null;
   };
 
   // Language priority: detected video language first, then Hindi variants, then English, then anything
   const preferredLangs = [
     ...(videoLanguage ? [videoLanguage] : []),
-    "hi", "hi-IN", "hi-Latn", "hi-orig",
-    "en", "en-US", "en-GB", "en-orig",
+    "hi",
+    "hi-IN",
+    "hi-Latn",
+    "hi-orig",
+    "en",
+    "en-US",
+    "en-GB",
+    "en-orig",
   ];
 
   // 1) Manual subtitles (highest quality)
@@ -152,7 +204,10 @@ function pickBestSubtitleUrl(
   }
   // Any manual subtitle language
   for (const tracks of Object.values(subtitles)) {
-    if (tracks?.length) { const u = findVttUrl(tracks); if (u) return u; }
+    if (tracks?.length) {
+      const u = findVttUrl(tracks);
+      if (u) return u;
+    }
   }
 
   // 2) Auto-generated captions
@@ -164,7 +219,10 @@ function pickBestSubtitleUrl(
   }
   // Any auto-caption language
   for (const tracks of Object.values(automaticCaptions)) {
-    if (tracks?.length) { const u = findVttUrl(tracks); if (u) return u; }
+    if (tracks?.length) {
+      const u = findVttUrl(tracks);
+      if (u) return u;
+    }
   }
   return null;
 }
@@ -176,12 +234,17 @@ function runYtDlpForSubs(args: string[]): Promise<void> {
       env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
     let stderr = "";
-    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.stderr?.on("data", (d) => {
+      stderr += d.toString();
+    });
     proc.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr.slice(-600) || `yt-dlp subs exited ${code}`));
+      else
+        reject(new Error(stderr.slice(-600) || `yt-dlp subs exited ${code}`));
     });
-    proc.on("error", (err) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
+    proc.on("error", (err) =>
+      reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
+    );
   });
 }
 
@@ -199,7 +262,14 @@ function extractVideoId(url: string): string | null {
 
 function buildFormats(ytFormats: any[]): VideoFormatOut[] {
   const qualityOrder: Record<number, number> = {
-    2160: 10, 1440: 9, 1080: 8, 720: 7, 480: 6, 360: 5, 240: 4, 144: 3,
+    2160: 10,
+    1440: 9,
+    1080: 8,
+    720: 7,
+    480: 6,
+    360: 5,
+    240: 4,
+    144: 3,
   };
 
   const videoAudioFormats: VideoFormatOut[] = [];
@@ -210,10 +280,13 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
   const seenCombined = new Set<number>();
 
   // Find best audio itag for merging
-  const bestAudioFmt = ytFormats
-    .filter((f) => f.acodec !== "none" && f.vcodec === "none" && f.ext === "m4a")
-    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-    ?? ytFormats.find((f) => f.acodec !== "none" && f.vcodec === "none");
+  const bestAudioFmt =
+    ytFormats
+      .filter(
+        (f) => f.acodec !== "none" && f.vcodec === "none" && f.ext === "m4a",
+      )
+      .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0] ??
+    ytFormats.find((f) => f.acodec !== "none" && f.vcodec === "none");
 
   for (const fmt of ytFormats) {
     const hasVideo = fmt.vcodec !== "none" && !!fmt.vcodec;
@@ -247,7 +320,9 @@ function buildFormats(ytFormats: any[]): VideoFormatOut[] {
 
       const qual = `${height}p`;
       const audioItag = bestAudioFmt?.format_id;
-      const mergeId = audioItag ? `${fmt.format_id}+${audioItag}` : `${fmt.format_id}+bestaudio`;
+      const mergeId = audioItag
+        ? `${fmt.format_id}+${audioItag}`
+        : `${fmt.format_id}+bestaudio`;
       mergeFormats.push({
         formatId: mergeId,
         ext: "mp4",
@@ -305,20 +380,36 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     return;
   }
 
-  if (!extractVideoId(url) && !url.includes("youtube.com") && !url.includes("youtu.be")) {
-    res.status(400).json({ error: "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=..." });
+  if (
+    !extractVideoId(url) &&
+    !url.includes("youtube.com") &&
+    !url.includes("youtu.be")
+  ) {
+    res
+      .status(400)
+      .json({
+        error:
+          "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=...",
+      });
     return;
   }
 
   try {
-    const json = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+    const json = await runYtDlp([
+      "--dump-json",
+      "--no-playlist",
+      "--no-warnings",
+      url,
+    ]);
     const data = JSON.parse(json);
 
     const formats = buildFormats(data.formats ?? []);
 
     const thumbnail =
       data.thumbnail ??
-      (Array.isArray(data.thumbnails) ? data.thumbnails[data.thumbnails.length - 1]?.url : null) ??
+      (Array.isArray(data.thumbnails)
+        ? data.thumbnails[data.thumbnails.length - 1]?.url
+        : null) ??
       null;
 
     res.json({
@@ -335,7 +426,9 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
   } catch (err) {
     req.log.error({ err }, "Failed to get video info");
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: "Failed to fetch video information", details: message });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch video information", details: message });
   }
 });
 
@@ -417,9 +510,13 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   args.push("-o", outputPath, job.url);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
-      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    });
+    const proc = spawn(
+      "python3",
+      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
+      {
+        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+    );
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -430,7 +527,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 
         // Parse progress lines: [download]  xx.x% of ~xx.xxMiB at xx.xxMiB/s ETA xx:xx
         const progressMatch = trimmed.match(
-          /\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)([\w]+)\s+at\s+([\d.]+)([\w/]+)\s+ETA\s+(\S+)/
+          /\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)([\w]+)\s+at\s+([\d.]+)([\w/]+)\s+ETA\s+(\S+)/,
         );
         if (progressMatch) {
           const percent = parseFloat(progressMatch[1]);
@@ -445,8 +542,13 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
           jobRef.eta = eta === "Unknown" ? null : eta;
 
           const mult: Record<string, number> = {
-            "B": 1, "KiB": 1024, "MiB": 1024 * 1024, "GiB": 1024 * 1024 * 1024,
-            "KB": 1000, "MB": 1000000, "GB": 1000000000,
+            B: 1,
+            KiB: 1024,
+            MiB: 1024 * 1024,
+            GiB: 1024 * 1024 * 1024,
+            KB: 1000,
+            MB: 1000000,
+            GB: 1000000000,
           };
           if (sizeUnit in mult) {
             jobRef.filesize = Math.round(sizeNum * mult[sizeUnit]);
@@ -455,7 +557,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
         }
 
         // Destination file (may appear multiple times: first for raw, then for converted)
-        const destMatch = trimmed.match(/\[(?:download|ExtractAudio|Merger)\] Destination:\s+(.+)/);
+        const destMatch = trimmed.match(
+          /\[(?:download|ExtractAudio|Merger)\] Destination:\s+(.+)/,
+        );
         if (destMatch) {
           const destPath = destMatch[1].trim();
           const fname = destPath.split("/").pop() ?? destPath;
@@ -465,7 +569,10 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
         }
 
         // Merging
-        if (trimmed.includes("Merging formats") || trimmed.includes("[Merger]")) {
+        if (
+          trimmed.includes("Merging formats") ||
+          trimmed.includes("[Merger]")
+        ) {
           jobRef.status = "merging";
           jobRef.message = "Merging video and audio...";
           jobRef.percent = Math.max(jobRef.percent ?? 0, 90);
@@ -473,7 +580,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 
         // Already downloaded
         if (trimmed.includes("has already been downloaded")) {
-          const alreadyMatch = trimmed.match(/\[download\] (.+) has already been downloaded/);
+          const alreadyMatch = trimmed.match(
+            /\[download\] (.+) has already been downloaded/,
+          );
           if (alreadyMatch) {
             jobRef.filename = alreadyMatch[1].split("/").pop() ?? "";
             jobRef.filePath = alreadyMatch[1].trim();
@@ -488,10 +597,15 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 
     proc.on("close", (code: number | null) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`));
+      else
+        reject(
+          new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`),
+        );
     });
 
-    proc.on("error", (err: Error) => reject(new Error(`Failed to start yt-dlp: ${err.message}`)));
+    proc.on("error", (err: Error) =>
+      reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
+    );
   });
 
   // Find the output file (yt-dlp may change extension)
@@ -557,7 +671,12 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
     return;
   }
   if (job.status === "expired") {
-    res.status(410).json({ error: "File has expired. Please download the video again.", expired: true });
+    res
+      .status(410)
+      .json({
+        error: "File has expired. Please download the video again.",
+        expired: true,
+      });
     return;
   }
   if (job.status !== "done" || !job.filePath) {
@@ -566,14 +685,22 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   }
 
   if (!existsSync(job.filePath)) {
-    res.status(410).json({ error: "File has expired. Please download the video again.", expired: true });
+    res
+      .status(410)
+      .json({
+        error: "File has expired. Please download the video again.",
+        expired: true,
+      });
     return;
   }
 
   const stats = statSync(job.filePath);
   const filename = job.filename ?? `video.${job.ext}`;
 
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${encodeURIComponent(filename)}"`,
+  );
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Length", stats.size);
 
@@ -581,7 +708,9 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   readStream.pipe(res);
 
   readStream.on("close", () => {
-    try { unlinkSync(job.filePath!); } catch {}
+    try {
+      unlinkSync(job.filePath!);
+    } catch {}
     jobs.delete(jobId);
   });
 });
@@ -590,11 +719,20 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
 
-interface VttCue { startSec: number; endSec: number; text: string; }
+interface VttCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
 
 function vttTimeToSec(t: string): number {
   const parts = t.split(":");
-  if (parts.length === 3) return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  if (parts.length === 3)
+    return (
+      parseFloat(parts[0]) * 3600 +
+      parseFloat(parts[1]) * 60 +
+      parseFloat(parts[2])
+    );
   return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
 }
 
@@ -602,32 +740,42 @@ function parseVtt(content: string): VttCue[] {
   const cues: VttCue[] = [];
   for (const block of content.split(/\n\n+/)) {
     const lines = block.trim().split("\n");
-    const timeLine = lines.find(l => l.includes("-->"));
+    const timeLine = lines.find((l) => l.includes("-->"));
     if (!timeLine) continue;
-    const [startStr, endStr] = timeLine.split("-->").map(s => s.trim().split(" ")[0]);
+    const [startStr, endStr] = timeLine
+      .split("-->")
+      .map((s) => s.trim().split(" ")[0]);
     const text = lines
-      .filter(l => !l.includes("-->") && !l.match(/^\d+$/) && l.trim())
-      .map(l => l.replace(/<[^>]+>/g, "").trim())
+      .filter((l) => !l.includes("-->") && !l.match(/^\d+$/) && l.trim())
+      .map((l) => l.replace(/<[^>]+>/g, "").trim())
       .filter(Boolean)
       .join(" ");
-    if (text) cues.push({ startSec: vttTimeToSec(startStr), endSec: vttTimeToSec(endStr), text });
+    if (text)
+      cues.push({
+        startSec: vttTimeToSec(startStr),
+        endSec: vttTimeToSec(endStr),
+        text,
+      });
   }
   return cues;
 }
 
 function cuesToText(cues: VttCue[]): string {
-  return cues.map(c => {
-    const mm = Math.floor(c.startSec / 60);
-    const ss = Math.floor(c.startSec % 60);
-    return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${c.text}`;
-  }).join("\n");
+  return cues
+    .map((c) => {
+      const mm = Math.floor(c.startSec / 60);
+      const ss = Math.floor(c.startSec % 60);
+      return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${c.text}`;
+    })
+    .join("\n");
 }
 
 function formatTime(sec: number): string {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = Math.floor(sec % 60);
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  if (h > 0)
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
@@ -654,19 +802,30 @@ interface ClipJob {
 const clipJobs = new Map<string, ClipJob>();
 
 // Clean up clip jobs older than 30 minutes
-setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  for (const [id, job] of clipJobs.entries()) {
-    if (job.createdAt < cutoff) clipJobs.delete(id);
-  }
-}, 10 * 60 * 1000);
+setInterval(
+  () => {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    for (const [id, job] of clipJobs.entries()) {
+      if (job.createdAt < cutoff) clipJobs.delete(id);
+    }
+  },
+  10 * 60 * 1000,
+);
 
 // POST: start a clip analysis job, return jobId immediately
 router.post("/youtube/clips", async (req: Request, res: Response) => {
   const { url, durations } = req.body as { url: string; durations?: number[] };
-  if (!url) { res.status(400).json({ error: "URL is required" }); return; }
+  if (!url) {
+    res.status(400).json({ error: "URL is required" });
+    return;
+  }
   if (!process.env.GEMINI_API_KEY) {
-    res.status(503).json({ error: "AI not configured", details: "GEMINI_API_KEY is not set" });
+    res
+      .status(503)
+      .json({
+        error: "AI not configured",
+        details: "GEMINI_API_KEY is not set",
+      });
     return;
   }
 
@@ -687,7 +846,10 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
 // GET: SSE stream for a clip job
 router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
   const job = clipJobs.get(req.params.jobId);
-  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -709,8 +871,14 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
   }
 
   const onStep = (d: any) => send({ type: "step", ...d });
-  const onDone = (d: any) => { send({ type: "done", ...d }); res.end(); };
-  const onError = (d: any) => { send({ type: "error", ...d }); res.end(); };
+  const onDone = (d: any) => {
+    send({ type: "done", ...d });
+    res.end();
+  };
+  const onError = (d: any) => {
+    send({ type: "error", ...d });
+    res.end();
+  };
 
   job.emitter.on("step", onStep);
   job.emitter.on("done", onDone);
@@ -731,8 +899,12 @@ async function runClipAnalysis(
   log: any,
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
-  const step = (step: string, status: "running" | "done" | "warn", message: string, data?: object) =>
-    emit("step", { step, status, message, ...data });
+  const step = (
+    step: string,
+    status: "running" | "done" | "warn",
+    message: string,
+    data?: object,
+  ) => emit("step", { step, status, message, ...data });
 
   job.status = "running";
 
@@ -741,7 +913,10 @@ async function runClipAnalysis(
   const subDir = join(DOWNLOAD_DIR, `subs_${tmpId}`);
 
   const durationLabels: Record<number, string> = {
-    60: "1 minute", 180: "3 minutes", 300: "5 minutes", 600: "10 minutes",
+    60: "1 minute",
+    180: "3 minutes",
+    300: "5 minutes",
+    600: "10 minutes",
   };
 
   try {
@@ -754,7 +929,12 @@ async function runClipAnalysis(
     // ── Step 1: Video metadata ─────────────────────────────────────────────
     step("metadata", "running", "Fetching video info...");
     try {
-      const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+      const metaJson = await runYtDlp([
+        "--dump-json",
+        "--no-playlist",
+        "--no-warnings",
+        url,
+      ]);
       const meta = JSON.parse(metaJson);
       videoDuration = meta.duration ?? 0;
       videoTitle = meta.title ?? "";
@@ -763,19 +943,25 @@ async function runClipAnalysis(
       // Extract subtitle URL from metadata so Step 2 can use it without another yt-dlp call
       const subs: Record<string, any[]> = meta.subtitles ?? {};
       const autoCaps: Record<string, any[]> = meta.automatic_captions ?? {};
-      const videoLang: string | undefined = meta.language ?? meta.original_language ?? undefined;
+      const videoLang: string | undefined =
+        meta.language ?? meta.original_language ?? undefined;
       metaSubtitleUrl = pickBestSubtitleUrl(subs, autoCaps, videoLang);
 
       if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
         transcript = meta.chapters
-          .map((c: any) => `[${formatTime(c.start_time)}–${formatTime(c.end_time ?? c.start_time + 60)}] Chapter: ${c.title}`)
+          .map(
+            (c: any) =>
+              `[${formatTime(c.start_time)}–${formatTime(c.end_time ?? c.start_time + 60)}] Chapter: ${c.title}`,
+          )
           .join("\n");
       }
 
-      step("metadata", "done",
+      step(
+        "metadata",
+        "done",
         `"${videoTitle.slice(0, 60)}${videoTitle.length > 60 ? "…" : ""}"` +
-        (videoDuration ? ` · ${formatTime(videoDuration)}` : ""),
-        { videoTitle, videoDuration }
+          (videoDuration ? ` · ${formatTime(videoDuration)}` : ""),
+        { videoTitle, videoDuration },
       );
     } catch (e) {
       step("metadata", "warn", "Could not load full metadata — trying anyway");
@@ -802,32 +988,60 @@ async function runClipAnalysis(
 
           // Try 1: language-specific (en + hi + any auto)
           await runYtDlpForSubs([
-            "--write-subs", "--write-auto-subs",
-            "--sub-lang", "hi.*,en.*",
-            "--sub-format", "vtt",
-            "--skip-download", "--no-warnings", "--no-playlist",
-            "-o", subBase, url,
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-lang",
+            "hi.*,en.*",
+            "--sub-format",
+            "vtt",
+            "--skip-download",
+            "--no-warnings",
+            "--no-playlist",
+            "-o",
+            subBase,
+            url,
           ]).catch(() => {});
 
           // Try 2: any language auto-subs if first attempt got nothing
-          if (!readdirSync(subDir).some(f => f.endsWith(".vtt"))) {
+          if (!readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
             await runYtDlpForSubs([
-              "--write-subs", "--write-auto-subs",
-              "--sub-format", "vtt",
-              "--skip-download", "--no-warnings", "--no-playlist",
-              "-o", subBase, url,
+              "--write-subs",
+              "--write-auto-subs",
+              "--sub-format",
+              "vtt",
+              "--skip-download",
+              "--no-warnings",
+              "--no-playlist",
+              "-o",
+              subBase,
+              url,
             ]).catch(() => {});
           }
 
           if (existsSync(subDir)) {
             const files = readdirSync(subDir);
-            const vttFile = files.map(f => join(subDir, f)).find(f => f.endsWith(".vtt"));
+            const vttFile = files
+              .map((f) => join(subDir, f))
+              .find((f) => f.endsWith(".vtt"));
             if (vttFile) vttContent = readFileSync(vttFile, "utf8");
-            for (const f of files) try { unlinkSync(join(subDir, f)); } catch {}
-            try { rmdirSync(subDir); } catch {}
+            for (const f of files)
+              try {
+                unlinkSync(join(subDir, f));
+              } catch {}
+            try {
+              rmdirSync(subDir);
+            } catch {}
           }
         } catch (_e) {
-          try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} rmdirSync(subDir); } } catch {}
+          try {
+            if (existsSync(subDir)) {
+              for (const f of readdirSync(subDir))
+                try {
+                  unlinkSync(join(subDir, f));
+                } catch {}
+              rmdirSync(subDir);
+            }
+          } catch {}
         }
       }
 
@@ -835,25 +1049,50 @@ async function runClipAnalysis(
         const cues = parseVtt(vttContent);
         const deduped: VttCue[] = [];
         for (const cue of cues) {
-          if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
+          if (!deduped.length || deduped[deduped.length - 1].text !== cue.text)
+            deduped.push(cue);
         }
         transcript = cuesToText(deduped);
-        step("transcript", "done", `Transcript ready — ${deduped.length} lines`, { hasTranscript: true });
+        step(
+          "transcript",
+          "done",
+          `Transcript ready — ${deduped.length} lines`,
+          { hasTranscript: true },
+        );
       } else {
-        step("transcript", "warn", "No transcript found — AI will use title & description", { hasTranscript: false });
+        step(
+          "transcript",
+          "warn",
+          "No transcript found — AI will use title & description",
+          { hasTranscript: false },
+        );
       }
     } else {
-      step("transcript", "done", `${transcript.split("\n").length} chapter markers found`, { hasTranscript: true });
+      step(
+        "transcript",
+        "done",
+        `${transcript.split("\n").length} chapter markers found`,
+        { hasTranscript: true },
+      );
     }
 
     const hasTranscript = transcript.length > 50;
-    const validDurations = clipDurations.filter(d => !videoDuration || d < videoDuration);
+    const validDurations = clipDurations.filter(
+      (d) => !videoDuration || d < videoDuration,
+    );
 
     // ── Step 3: AI analysis ───────────────────────────────────────────────
-    step("ai", "running", `AI is scanning every segment of the video for all ${validDurations.map(d => durationLabels[d] ?? `${Math.round(d/60)}min`).join(", ")} clips...`);
+    step(
+      "ai",
+      "running",
+      `AI is scanning every segment of the video for all ${validDurations.map((d) => durationLabels[d] ?? `${Math.round(d / 60)}min`).join(", ")} clips...`,
+    );
 
     const durationDescList = validDurations
-      .map(d => `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`)
+      .map(
+        (d) =>
+          `- ${durationLabels[d] ?? `${Math.round(d / 60)} minutes`} (exactly ${d} seconds each)`,
+      )
       .join("\n");
 
     const systemPrompt = `You are an expert video content analyst specializing in viral, engaging clip segments. You are fluent in English and Hindi.
@@ -877,7 +1116,7 @@ Respond with ONLY a valid JSON array (no markdown, no extra text):
     const userContent = `Video: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
 ${videoDescription ? `Description: ${videoDescription}\n` : ""}
-${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 80000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
+${hasTranscript ? `\nTranscript (may be Hindi, English, or mixed):\n${transcript.slice(0, 100000)}` : "\n[No transcript — use title, description, and typical video structure to find best segments]"}
 
 Find every worthwhile clip for these durations:
 ${durationDescList}
@@ -885,12 +1124,17 @@ ${durationDescList}
 Be exhaustive — scan the whole video. Return every segment that would make a great standalone clip. No limit.`;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
-    const result = await model.generateContent(systemPrompt + "\n\n" + userContent);
+    const result = await model.generateContent(
+      systemPrompt + "\n\n" + userContent,
+    );
     const raw = result.response.text().trim();
 
     let parsed: any[];
     try {
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      const cleaned = raw
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
       parsed = JSON.parse(cleaned);
       if (!Array.isArray(parsed)) parsed = [parsed];
     } catch (e) {
@@ -902,26 +1146,40 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
     }
 
     const clips: BestClip[] = parsed
-      .filter((c: any) => typeof c.startSec === "number" && typeof c.durationSec === "number")
+      .filter(
+        (c: any) =>
+          typeof c.startSec === "number" && typeof c.durationSec === "number",
+      )
       .map((c: any): BestClip => {
         const durSec = c.durationSec;
         const startSec = Math.max(0, Math.round(c.startSec));
         const endSec = Math.min(videoDuration || 99999, startSec + durSec);
         return {
-          durationLabel: durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`,
+          durationLabel:
+            durationLabels[durSec] ?? `${Math.round(durSec / 60)} min`,
           durationSec: durSec,
           startSec,
           endSec,
           startFormatted: formatTime(startSec),
           endFormatted: formatTime(endSec),
-          title: c.title ?? `Best ${durationLabels[durSec] ?? durSec + "s"} clip`,
+          title:
+            c.title ?? `Best ${durationLabels[durSec] ?? durSec + "s"} clip`,
           description: c.description ?? "",
           reason: c.reason ?? "",
         };
       })
-      .sort((a, b) => a.durationSec !== b.durationSec ? a.durationSec - b.durationSec : a.startSec - b.startSec);
+      .sort((a, b) =>
+        a.durationSec !== b.durationSec
+          ? a.durationSec - b.durationSec
+          : a.startSec - b.startSec,
+      );
 
-    step("ai", "done", `Found ${clips.length} clips across ${validDurations.length} duration${validDurations.length !== 1 ? "s" : ""}`, { clipCount: clips.length });
+    step(
+      "ai",
+      "done",
+      `Found ${clips.length} clips across ${validDurations.length} duration${validDurations.length !== 1 ? "s" : ""}`,
+      { clipCount: clips.length },
+    );
 
     log.info({ totalClips: clips.length }, "Clips analysis complete");
 
@@ -929,7 +1187,6 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
     job.status = "done";
     job.result = resultData;
     emit("done", resultData);
-
   } catch (err) {
     log.error({ err }, "Clip analysis failed");
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -937,7 +1194,15 @@ Be exhaustive — scan the whole video. Return every segment that would make a g
     job.error = message;
     emit("error", { message });
     // Cleanup subtitle dir if it exists
-    try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} rmdirSync(subDir); } } catch {}
+    try {
+      if (existsSync(subDir)) {
+        for (const f of readdirSync(subDir))
+          try {
+            unlinkSync(join(subDir, f));
+          } catch {}
+        rmdirSync(subDir);
+      }
+    } catch {}
   }
 }
 
@@ -957,7 +1222,9 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   }
 
   const jobId = randomUUID();
-  const safeTitle = (title ?? "clip").replace(/[^\w\s\-_.()]/g, "_").slice(0, 60);
+  const safeTitle = (title ?? "clip")
+    .replace(/[^\w\s\-_.()]/g, "_")
+    .slice(0, 60);
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -983,19 +1250,30 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   jobRef.status = "downloading";
 
   const args = [
-    "--no-playlist", "--no-warnings", "--newline", "--progress",
-    "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-    "--merge-output-format", "mp4",
-    "--download-sections", `*${start}-${end}`,
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--progress",
+    "-f",
+    "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    "--merge-output-format",
+    "mp4",
+    "--download-sections",
+    `*${start}-${end}`,
     "--force-keyframes-at-cuts",
-    "-o", outputPath,
+    "-o",
+    outputPath,
     url,
   ];
 
   new Promise<void>((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
-      env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    });
+    const proc = spawn(
+      "python3",
+      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
+      {
+        env: { ...process.env, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+    );
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -1006,10 +1284,13 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
         if (progressMatch) {
           jobRef.percent = Math.round(parseFloat(progressMatch[1]));
         }
-        const destMatch = t.match(/\[(?:download|Merger)\] Destination:\s+(.+)/);
+        const destMatch = t.match(
+          /\[(?:download|Merger)\] Destination:\s+(.+)/,
+        );
         if (destMatch) {
           jobRef.filePath = destMatch[1].trim();
-          jobRef.filename = destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
+          jobRef.filename =
+            destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
         }
         if (t.includes("[Merger]")) {
           jobRef.status = "merging";
@@ -1017,16 +1298,25 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
         }
       }
     });
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
     proc.on("close", (code: number | null) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`));
+      else
+        reject(
+          new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`),
+        );
     });
     proc.on("error", (err: Error) => reject(err));
   })
     .then(() => {
-      const ext = ["mp4", "mkv", "webm"].find(e => existsSync(join(DOWNLOAD_DIR, `${jobId}.${e}`)));
-      const finalPath = ext ? join(DOWNLOAD_DIR, `${jobId}.${ext}`) : (jobRef.filePath ?? null);
+      const ext = ["mp4", "mkv", "webm"].find((e) =>
+        existsSync(join(DOWNLOAD_DIR, `${jobId}.${e}`)),
+      );
+      const finalPath = ext
+        ? join(DOWNLOAD_DIR, `${jobId}.${ext}`)
+        : (jobRef.filePath ?? null);
       if (!finalPath || !existsSync(finalPath)) {
         jobRef.status = "error";
         jobRef.message = "Clip file not found after download";
