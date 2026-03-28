@@ -681,7 +681,7 @@ RESPOND with ONLY a valid JSON array, no markdown fences:
     "isBhajan": false,
     "imageChangeEvery": 12,
     "description": "Opening — speaker introduces the katha",
-    "imagePrompt": "Peaceful riverside setting at dawn, devotees sitting in a circle reading Shreemad Bhagwat Mahapuran, soft morning light, incense smoke drifting in the air, calm spiritual atmosphere, traditional Indian devotional painting style, warm colors, serene and divine mood"
+    "imagePrompt": "Peaceful riverside setting at dawn, devotees sitting in a circle reading Shreemad Bhagwat Mahapuran, soft morning light, incense smoke drifting in the air, calm spiritual atmosphere, warm colors, serene and divine mood"
   }
 ]`,
     });
@@ -888,7 +888,10 @@ async function runBhagwatRender(
     });
 
     // ── 3. Build clip list (image path + duration per display slot) ───────────
-    interface Clip { imgPath: string; dur: number; }
+    interface Clip {
+      imgPath: string;
+      dur: number;
+    }
     const clips: Clip[] = [];
     const usedIndexPerSeg = new Array(timeline.length).fill(0);
 
@@ -922,10 +925,7 @@ async function runBhagwatRender(
     job.filename = `bhagwat_${tmpId.slice(0, 6)}.mp4`;
 
     // Clamp fade so it never exceeds 80% of the shortest clip
-    const FADE_DUR = Math.min(
-      0.7,
-      Math.min(...clips.map((c) => c.dur)) * 0.8,
-    );
+    const FADE_DUR = Math.min(0.7, Math.min(...clips.map((c) => c.dur)) * 0.8);
 
     const SCALE =
       "scale=1920:1080:force_original_aspect_ratio=decrease," +
@@ -936,23 +936,51 @@ async function runBhagwatRender(
 
     if (clips.length === 1) {
       // Single clip — no xfade needed, simple path
-      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
+      ffArgs.push(
+        "-loop",
+        "1",
+        "-t",
+        clips[0].dur.toFixed(3),
+        "-i",
+        clips[0].imgPath,
+      );
       ffArgs.push("-i", audioFile);
       ffArgs.push(
-        "-vf", SCALE,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest", "-y", outputPath,
+        "-vf",
+        SCALE,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-y",
+        outputPath,
       );
     } else {
       // Multiple clips — chain xfade between each consecutive pair
       // Input 0: natural duration; inputs 1..N-1: duration + FADE_DUR (overlap padding)
-      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
+      ffArgs.push(
+        "-loop",
+        "1",
+        "-t",
+        clips[0].dur.toFixed(3),
+        "-i",
+        clips[0].imgPath,
+      );
       for (let i = 1; i < clips.length; i++) {
         ffArgs.push(
-          "-loop", "1",
-          "-t", (clips[i].dur + FADE_DUR).toFixed(3),
-          "-i", clips[i].imgPath,
+          "-loop",
+          "1",
+          "-t",
+          (clips[i].dur + FADE_DUR).toFixed(3),
+          "-i",
+          clips[i].imgPath,
         );
       }
       ffArgs.push("-i", audioFile);
@@ -984,12 +1012,25 @@ async function runBhagwatRender(
 
       const audioInputIdx = clips.length;
       ffArgs.push(
-        "-filter_complex", filterParts.join(";"),
-        "-map", "[vout]",
-        "-map", `${audioInputIdx}:a`,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest", "-y", outputPath,
+        "-filter_complex",
+        filterParts.join(";"),
+        "-map",
+        "[vout]",
+        "-map",
+        `${audioInputIdx}:a`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-y",
+        outputPath,
       );
     }
 
