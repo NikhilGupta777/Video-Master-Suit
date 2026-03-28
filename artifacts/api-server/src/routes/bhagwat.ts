@@ -653,9 +653,9 @@ HOW TO THINK ABOUT EACH SEGMENT:
 
 2. BHAJAN / KIRTAN (when speaker sings a devotional song or plays music): Detect this by repeated devotional phrases, "Ram Hare Krishn Hare", "Madhab Madhab", "Jai Shri Ram", "Govind Bolo", song lyrics, musical patterns. For bhajans: use calm meditative devotional imagery — NOT the story scenes, but peaceful deity imagery (eg Radha krishna, Sita Ram or which fits the best to the bhajan,. etc.). Change images every 25–40 seconds (bhajans have a slow, meditative rhythm). Mark isBhajan: true.
 
-3. SHLOKA RECITATION: Sanskrit verses being recited. Use sacred imagery — open scripture, deity, whatever fits best according to the narration. Change every 12–18 seconds.
+3. SHLOKA RECITATION: Sanskrit verses being recited. Use sacred imagery — open scripture, deity, whatever fits best according to the narration. 
 
-4. OPENING / CLOSING / TRANSITIONS: Use auspicious imagery. Change every 10–15 seconds or if narration changes earlier then adjust accordingly.
+4. OPENING / CLOSING / TRANSITIONS: Use auspicious imagery. Change every 10–30 seconds or adjust accordingly.
 
 THE STORY MUST FLOW: 
 For example: If narrating Dhruv Bhakt's story, your segments should visually tell the WHOLE story in sequence (- Dhruv rejected by stepmother → forest with young boy walking → Narada Muni meeting Dhruv → Dhruv meditating → Lord Vishnu's divine appearance → Dhruv's elevation to Dhruv Loka etc) but according to how the narrator is narrating according to the narration pacing and all aspects:
@@ -666,6 +666,7 @@ IMAGE PROMPT RULES:
 - Be specific and vivid: scene, characters, their appearance, setting, lighting, mood
 - Include style: "traditional devotional Indian painting", "realistic", etc.
 - Do NOT include: watermarks, logos, borders, modern photography
+- if and only if generating image with lord (maha vishnu, lord krishna, etc) then use more detailed description of the lord and the scene.
 - Bhajan prompts: peaceful, divine, deity-focused, bhajan specific.
 
 ${
