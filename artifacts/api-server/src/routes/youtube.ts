@@ -1355,9 +1355,6 @@ async function runClipAnalysis(
       videoHours >= 1
         ? `${Math.round(videoHours * 10) / 10}-hour`
         : `${Math.round(videoDuration / 60)}-minute`;
-    const expectedMinClips1min = videoDuration
-      ? Math.max(5, Math.round(videoDuration / 240))
-      : 10;
     // Fix #1: when a topic filter is active, the coverage mandate must NOT demand
     // a minimum clip count — that would force the AI to add off-topic clips.
     const coverageGuidance =
@@ -1365,10 +1362,9 @@ async function runClipAnalysis(
         ? customInstructions
           ? `\nCOVERAGE: Scan the ENTIRE ${videoDurationLabel} video (0s → ${formatTime(videoDuration)}) — do NOT stop early. Return EVERY matching segment you find throughout the full runtime, from start to end.`
           : `\nCOVERAGE MANDATE (${formatTime(videoDuration)} video):
-- Spread clips proportionally across the ENTIRE runtime — beginning, every middle section, and end
-- Do NOT cluster at the start — every 10-minute block of the ${videoDurationLabel} video deserves at least one clip
-- A ${videoDurationLabel} video should yield at least ${expectedMinClips1min} clips total across all durations
-- NEVER stop early — scan all the way to ${formatTime(videoDuration)}`
+- Scan the ENTIRE runtime from 0s to ${formatTime(videoDuration)} — do NOT stop early or cluster clips at the beginning
+- Do NOT skip the middle or end sections — if great content exists there, include it
+- Only return clips from sections that genuinely have something worth watching — never force a clip from a dull or repetitive section just to fill coverage`
         : "";
 
     let systemPrompt: string;
