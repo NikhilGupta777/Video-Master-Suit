@@ -206,12 +206,15 @@ async function generateAllSegmentImages(
   return imagePaths;
 }
 
+// Base args: tv_embedded gives full formats + bypasses bot detection; android/ios are fallbacks
+const YTDLP_BASE_ARGS = ["--extractor-args", "youtube:player_client=tv_embedded,android,ios"];
+
 // ── yt-dlp helpers ────────────────────────────────────────────────────────────
 function runYtDlp(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "",
       err = "";
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args], {
       env: PYTHON_ENV,
     });
     proc.stdout.on("data", (d) => {
@@ -232,7 +235,7 @@ function runYtDlpForSubs(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "",
       err = "";
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args], {
       env: { ...PYTHON_ENV, YTDLP_NO_LAZY_EXTRACTORS: "1" },
     });
     proc.stdout.on("data", (d) => {

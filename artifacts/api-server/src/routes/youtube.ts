@@ -108,12 +108,11 @@ interface DownloadJob {
 
 const jobs = new Map<string, DownloadJob>();
 
-// Base args applied to every yt-dlp call for proper JS challenge solving
+// Base args applied to every yt-dlp call.
+// tv_embedded gives full format list + bypasses bot detection; android/ios are fallbacks.
 const BASE_YTDLP_ARGS = [
-  "--js-runtimes",
-  "node",
-  "--remote-components",
-  "ejs:github",
+  "--extractor-args",
+  "youtube:player_client=tv_embedded,android,ios",
 ];
 
 function runYtDlp(args: string[]): Promise<string> {
