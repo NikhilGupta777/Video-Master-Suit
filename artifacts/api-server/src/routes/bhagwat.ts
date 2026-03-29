@@ -1181,7 +1181,9 @@ async function runBhagwatRender(
 
     // Clamp fade so it never exceeds 80% of the shortest clip
     const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
-    const FIRST_FADEIN = 3.0; // seconds — first image fades in from black
+    // Clamp first-image fade-in so it never exceeds 40% of the first clip's duration
+    // (prevents fade-in from fighting the first xfade transition on short clips)
+    const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
 
     const SCALE =
       "scale=1920:1080:force_original_aspect_ratio=decrease," +

@@ -179,23 +179,29 @@ function EditableTimelinePreview({
         </div>
       </div>
 
-      {/* Timeline bar */}
-      <div className="flex h-4 rounded-lg overflow-hidden gap-px">
-        {timeline.map((seg, i) => {
-          const pct = totalDur > 0 ? ((seg.endSec - seg.startSec) / totalDur) * 100 : 0;
-          return (
+      {/* Timeline bar — shows segments positioned relative to the full video, with gaps */}
+      <div className="flex h-4 rounded-lg overflow-hidden">
+        {barItems.map((item, i) =>
+          item.kind === "gap" ? (
             <div
-              key={i}
-              style={{ width: `${pct}%` }}
-              className={cn(
-                "h-full min-w-[2px]",
-                seg.isBhajan ? "bg-violet-500/70" : "bg-amber-500/50",
-                sugByIdx[i] ? "ring-1 ring-yellow-400/60" : "",
-              )}
-              title={`${formatSec(seg.startSec)} – ${formatSec(seg.endSec)} · ${seg.description}`}
+              key={`gap-${i}`}
+              style={{ width: `${item.pct}%` }}
+              className="h-full bg-white/8 shrink-0"
+              title="No image in this section"
             />
-          );
-        })}
+          ) : (
+            <div
+              key={`seg-${item.idx}`}
+              style={{ width: `${item.pct}%` }}
+              className={cn(
+                "h-full min-w-[2px] shrink-0",
+                item.seg.isBhajan ? "bg-violet-500/70" : "bg-amber-500/50",
+                sugByIdx[item.idx] ? "ring-1 ring-yellow-400/60" : "",
+              )}
+              title={`${formatSec(item.seg.startSec)} – ${formatSec(item.seg.endSec)} · ${item.seg.description}`}
+            />
+          )
+        )}
       </div>
 
       {/* Segment list */}
@@ -366,8 +372,7 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
 }
 
 // ── Main Bhagwat Editor ───────────────────────────────────────────────────────
-function BhagwatEditor({ BASE }: { BASE: string }) {
-  const [url, setUrl] = useState("");
+function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUrl: (v: string) => void }) {
   const [mode, setMode] = useState<"full" | "smart">("full");
   const [timeline, setTimeline] = useState<TimelineSegment[] | null>(null);
   const [videoTitle, setVideoTitle] = useState("");
@@ -415,10 +420,14 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
         downloadUrl,
         timestamp: Date.now(),
       };
-      const updated = [entry, ...history].slice(0, MAX_HISTORY);
-      saveHistory(updated);
+      // Use functional update so we never close over a stale `history` value
+      setHistory(prev => {
+        const updated = [entry, ...prev].slice(0, MAX_HISTORY);
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        return updated;
+      });
     }
-  }, [phase, downloadUrl]);
+  }, [phase, downloadUrl, downloadFilename, videoTitle]);
 
   const handleAnalyze = async () => {
     if (!url.trim()) { toast({ title: "Paste a YouTube URL first", variant: "destructive" }); return; }
@@ -520,7 +529,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
       const res = await fetch(`${BASE}/api/bhagwat/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, timeline }),
+        body: JSON.stringify({ url, timeline, videoDuration }),
       });
       const { jobId } = await res.json();
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
@@ -910,6 +919,8 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
 export function BhagwatVideos() {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(STORAGE_KEY) === "1");
   const [tab, setTab] = useState<"clips" | "editor">("editor");
+  // Lifted up so the Find Clips tab pre-fills the same URL the editor already has
+  const [url, setUrl] = useState("");
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -951,10 +962,10 @@ export function BhagwatVideos() {
       </div>
 
       <div className={tab === "editor" ? undefined : "hidden"}>
-        <BhagwatEditor BASE={BASE} />
+        <BhagwatEditor BASE={BASE} url={url} setUrl={setUrl} />
       </div>
       <div className={tab === "clips" ? undefined : "hidden"}>
-        <BestClips url="" />
+        <BestClips url={url} />
       </div>
     </motion.div>
   );
