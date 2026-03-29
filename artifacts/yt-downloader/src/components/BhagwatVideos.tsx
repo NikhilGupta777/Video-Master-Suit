@@ -34,7 +34,6 @@ interface HistoryEntry {
 
 const HISTORY_KEY = "bhagwat_render_history";
 const MAX_HISTORY = 8;
-const CORRECT_PASSWORD = "bhagwatnarrationvideos@clips2026";
 const STORAGE_KEY = "bhagwat_unlocked";
 
 function formatSec(s: number) {
@@ -56,14 +55,29 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const attempt = () => {
-    if (pw === CORRECT_PASSWORD) {
-      sessionStorage.setItem(STORAGE_KEY, "1");
-      onUnlock();
-    } else {
-      setError("Incorrect password");
-      setPw("");
+  const attempt = async () => {
+    if (!pw) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/bhagwat/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.ok) {
+        sessionStorage.setItem(STORAGE_KEY, "1");
+        onUnlock();
+      } else {
+        setError("Incorrect password");
+        setPw("");
+      }
+    } catch {
+      setError("Could not connect — try again");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -101,8 +115,10 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
             </button>
           </div>
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <Button onClick={attempt} className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30">
-            <Unlock className="w-4 h-4 mr-2" /> Unlock
+          <Button onClick={attempt} disabled={loading || !pw} className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30">
+            {loading
+              ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Checking…</>
+              : <><Unlock className="w-4 h-4 mr-2" /> Unlock</>}
           </Button>
         </div>
       </div>
@@ -316,6 +332,50 @@ function EditableTimelinePreview({
   );
 }
 
+// ── History Download Row — checks if file is still alive before downloading ────
+function HistoryDownloadRow({ entry }: { entry: HistoryEntry }) {
+  const [expired, setExpired] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  const handleDownload = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (expired) return;
+    setChecking(true);
+    try {
+      const res = await fetch(entry.downloadUrl, { method: "HEAD" });
+      if (!res.ok) { setExpired(true); setChecking(false); return; }
+    } catch { setExpired(true); setChecking(false); return; }
+    setChecking(false);
+    // File exists — trigger download via programmatic click
+    const a = document.createElement("a");
+    a.href = entry.downloadUrl;
+    a.download = entry.filename;
+    a.click();
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-white/3 px-2.5 py-2">
+      <Film className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-xs text-white/70 truncate">{entry.title || entry.filename}</p>
+        <p className="text-xs text-white/30">{timeAgo(entry.timestamp)}</p>
+      </div>
+      {expired ? (
+        <span className="shrink-0 text-[10px] text-red-400/70 px-2">Expired</span>
+      ) : (
+        <a
+          href={entry.downloadUrl}
+          download={entry.filename}
+          onClick={handleDownload}
+          className="shrink-0 flex items-center gap-1 text-xs px-2.5 py-1 bg-green-600/40 hover:bg-green-500/50 text-white/80 rounded-lg transition-colors"
+        >
+          {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+        </a>
+      )}
+    </div>
+  );
+}
+
 // ── Render History ─────────────────────────────────────────────────────────────
 function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear: () => void }) {
   const [open, setOpen] = useState(false);
@@ -341,21 +401,9 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
             className="overflow-hidden"
           >
             <div className="px-3 pb-3 space-y-1.5 border-t border-white/8 pt-2.5">
+              <p className="text-[10px] text-white/20 pt-1 pb-0.5">Downloads expire when the server restarts. Re-render if a link no longer works.</p>
               {history.map(entry => (
-                <div key={entry.id} className="flex items-center gap-2 rounded-lg bg-white/3 px-2.5 py-2">
-                  <Film className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-white/70 truncate">{entry.title || entry.filename}</p>
-                    <p className="text-xs text-white/30">{timeAgo(entry.timestamp)}</p>
-                  </div>
-                  <a
-                    href={entry.downloadUrl}
-                    download={entry.filename}
-                    className="shrink-0 flex items-center gap-1 text-xs px-2.5 py-1 bg-green-600/40 hover:bg-green-500/50 text-white/80 rounded-lg transition-colors"
-                  >
-                    <Download className="w-3 h-3" />
-                  </a>
-                </div>
+                <HistoryDownloadRow key={entry.id} entry={entry} />
               ))}
               <button
                 onClick={onClear}
@@ -681,11 +729,13 @@ function BhagwatEditor({
 
         <Button
           onClick={handleAnalyze}
-          disabled={phase === "analyzing" || phase === "rendering"}
+          disabled={phase === "analyzing" || phase === "rendering" || reviewing}
           className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30"
         >
           {phase === "analyzing" ? (
             <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</>
+          ) : reviewing ? (
+            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> AI reviewing plan…</>
           ) : (
             <><Bot className="w-4 h-4 mr-2" /> Analyze & Generate Timeline</>
           )}
@@ -770,6 +820,7 @@ function BhagwatEditor({
             <EditableTimelinePreview
               timeline={timeline}
               suggestions={suggestions}
+              videoDuration={videoDuration}
               onEditPrompt={handleEditPrompt}
               onAcceptSuggestion={handleAcceptSuggestion}
               onDismissSuggestion={handleDismissSuggestion}
@@ -874,6 +925,16 @@ function BhagwatEditor({
               )}
             </div>
 
+            {/* AI review complete notice */}
+            {!reviewing && autoImprovedCount !== null && autoImprovedCount > 0 && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
+                <Lightbulb className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                <p className="text-xs text-yellow-300/80">
+                  AI improved <span className="font-semibold">{autoImprovedCount} scene prompt{autoImprovedCount !== 1 ? "s" : ""}</span> — review above and render when ready.
+                </p>
+              </div>
+            )}
+
             {/* Image count info */}
             <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
               <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
@@ -883,7 +944,8 @@ function BhagwatEditor({
             </div>
 
             <Button
-              onClick={handleRender}
+              onClick={() => handleRender()}
+              disabled={reviewing}
               className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30 text-white shadow-[0_0_30px_rgba(217,119,6,0.3)]"
             >
               <Sparkles className="w-4 h-4 mr-2" />
@@ -923,7 +985,7 @@ function BhagwatEditor({
             {autoImprovedCount !== null && autoImprovedCount > 0 && (
               <p className="text-xs text-yellow-400/60 text-center flex items-center justify-center gap-1">
                 <Lightbulb className="w-3 h-3" />
-                AI auto-improved {autoImprovedCount} scene prompt{autoImprovedCount !== 1 ? "s" : ""} before rendering
+                Rendering with {autoImprovedCount} AI-reviewed scene prompt{autoImprovedCount !== 1 ? "s" : ""}
               </p>
             )}
             <p className="text-xs text-white/30 text-center">

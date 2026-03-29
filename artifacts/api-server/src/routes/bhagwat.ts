@@ -86,7 +86,6 @@ function getImageGenClient(): GoogleGenAI {
 }
 
 async function generateImage(
-  _genAI: GoogleGenerativeAI,
   prompt: string,
   outputPath: string,
 ): Promise<void> {
@@ -171,7 +170,7 @@ async function generateAllSegmentImages(
     await Promise.all(
       batch.map(async (task) => {
         try {
-          await generateImage(genAI, task.prompt, task.path);
+          await generateImage(task.prompt, task.path);
           imagePaths[task.segIdx].push(task.path);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -182,7 +181,7 @@ async function generateAllSegmentImages(
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. MUST be photorealistic — no abstract, digital, animated, or illustrated styles`;
           try {
-            await generateImage(genAI, fallback, task.path);
+            await generateImage(fallback, task.path);
             imagePaths[task.segIdx].push(task.path);
           } catch (err2) {
             const errMsg2 = err2 instanceof Error ? err2.message : String(err2);
@@ -416,6 +415,20 @@ setInterval(() => {
     if (job.createdAt < cutoff) analysisJobs.delete(id);
   }
 }, 30 * 60 * 1000);
+
+// ── Password Auth ─────────────────────────────────────────────────────────────
+// The password is stored server-side in BHAGWAT_PASSWORD env var so it is
+// never exposed in client-side JavaScript.
+router.post("/bhagwat/auth", (req: Request, res: Response) => {
+  const { password } = req.body as { password?: string };
+  const expected =
+    process.env.BHAGWAT_PASSWORD ?? "bhagwatnarrationvideos@clips2026";
+  if (!password || password !== expected) {
+    res.status(401).json({ ok: false, message: "Incorrect password" });
+    return;
+  }
+  res.json({ ok: true });
+});
 
 router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
   const { url, mode, clipStartSec, clipEndSec } = req.body as {
