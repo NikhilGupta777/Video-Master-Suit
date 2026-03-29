@@ -403,6 +403,8 @@ function BhagwatEditor({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const hasAutoReviewedRef = useRef(false);
   const reviewScrollRef = useRef<HTMLDivElement | null>(null);
+  // Always tracks the latest timeline so SSE handlers don't use stale closures
+  const timelineRef = useRef<TimelineSegment[] | null>(null);
 
   const [history, setHistory] = useState<HistoryEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]"); } catch { return []; }
@@ -416,7 +418,13 @@ function BhagwatEditor({
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
 
-  // Auto-trigger review as soon as analysis completes
+  // Keep timelineRef in sync so SSE handlers never read a stale closure
+  useEffect(() => { timelineRef.current = timeline; }, [timeline]);
+
+  // Cleanup: close any open EventSource when the component unmounts
+  useEffect(() => { return () => { esRef.current?.close(); }; }, []);
+
+  // Auto-trigger review as soon as analysis completes (but do NOT auto-render)
   useEffect(() => {
     if (phase === "analyzed" && timeline && !hasAutoReviewedRef.current) {
       hasAutoReviewedRef.current = true;
@@ -519,8 +527,10 @@ function BhagwatEditor({
         const d = JSON.parse(e.data);
         const incoming: Suggestion[] = d.suggestions ?? [];
 
-        // Apply all suggestions to the current timeline (captured in this closure)
-        const updatedTl = (timeline ?? []).map((seg, i) => {
+        // Use timelineRef.current (not the closed-over `timeline`) so any
+        // edits the user made during the review period are preserved.
+        const base = timelineRef.current ?? [];
+        const updatedTl = base.map((seg, i) => {
           const match = incoming.find(s => s.segIdx === i);
           return match ? { ...seg, imagePrompt: match.improvedPrompt } : seg;
         });
@@ -530,9 +540,7 @@ function BhagwatEditor({
         setSuggestions([]);
         setReviewing(false);
         es.close();
-
-        // Auto-render immediately with the updated timeline
-        handleRender(updatedTl);
+        // User reviews the improved timeline and clicks Render manually — no auto-render.
       });
       es.addEventListener("jobError", e => {
         const d = JSON.parse((e as MessageEvent).data);

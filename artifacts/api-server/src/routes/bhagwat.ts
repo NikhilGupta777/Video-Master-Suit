@@ -1180,7 +1180,10 @@ async function runBhagwatRender(
       }),
     ]);
 
-    // Trim audio to clip range when editing a specific clip
+    // Trim audio to clip range when editing a specific clip.
+    // Always re-encode to aac (-c:a aac) instead of -c:a copy, because YouTube
+    // audio is often webm/opus and copying opus into an .aac container causes
+    // FFmpeg to fail or produce corrupt audio.
     if (clipStartSec !== undefined && clipEndSec !== undefined) {
       const trimmedPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio_trimmed.aac`);
       await new Promise<void>((resolve, reject) => {
@@ -1188,7 +1191,8 @@ async function runBhagwatRender(
           "-ss", String(clipStartSec),
           "-t", String(clipEndSec - clipStartSec),
           "-i", audioFile,
-          "-c:a", "copy",
+          "-c:a", "aac",
+          "-b:a", "192k",
           "-y",
           trimmedPath,
         ]);
@@ -1197,7 +1201,7 @@ async function runBhagwatRender(
         ff.on("close", (code) =>
           code === 0
             ? resolve()
-            : reject(new Error(`Audio trim failed (${code}): ${stderr.slice(-200)}`)),
+            : reject(new Error(`Audio trim failed (${code}): ${stderr.slice(-300)}`)),
         );
       });
       try { unlinkSync(audioFile); } catch {}
@@ -1413,6 +1417,16 @@ async function runBhagwatRender(
     await new Promise<void>((resolve, reject) => {
       const ff = spawn("ffmpeg", ffArgs);
       let stderr = "";
+      let resolved = false;
+
+      // Watchdog: kill FFmpeg if it hangs for more than 30 minutes
+      const watchdog = setTimeout(() => {
+        if (!resolved) {
+          ff.kill("SIGKILL");
+          reject(new Error("FFmpeg timed out after 30 minutes"));
+        }
+      }, 30 * 60 * 1000);
+
       ff.stderr.on("data", (d: Buffer) => {
         stderr += d.toString();
         const match = stderr.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/g);
@@ -1430,11 +1444,13 @@ async function runBhagwatRender(
           });
         }
       });
-      ff.on("close", (code) =>
+      ff.on("close", (code) => {
+        resolved = true;
+        clearTimeout(watchdog);
         code === 0
           ? resolve()
-          : reject(new Error(`FFmpeg failed (${code}): ${stderr.slice(-400)}`)),
-      );
+          : reject(new Error(`FFmpeg failed (${code}): ${stderr.slice(-400)}`));
+      });
     });
 
     // ── 5. Cleanup ────────────────────────────────────────────────────────────
