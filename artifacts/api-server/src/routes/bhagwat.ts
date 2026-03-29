@@ -815,8 +815,8 @@ IMAGE PROMPT RULES:
 
 ${
   mode === "full"
-    ? `FULL COVERAGE: Every second must be covered. No gaps. Start at 0, end at exactly ${videoDuration}. Segments must be contiguous.`
-    : `SMART PLACEMENT: Cover the most visually rich moments (ALL SCENES THROUGH OUT THE VIDEO VISUALLY APPEALING) — key story beats, bhajans, and climactic scenes. Gaps are allowed.`
+    ? `FULL COVERAGE MODE: Every second of the video must be covered. No gaps allowed. Start at exactly 0 and end at exactly ${videoDuration}s. All segments must be contiguous with no spaces between them.`
+    : `SMART PLACEMENT MODE: Do NOT cover the whole video. Select only the most visually impactful 30–55% of the video duration. Leave significant gaps — silence between images is fine and expected. Pick moments where a compelling image genuinely adds value: climactic story revelations, bhajans, key leela moments, emotional peaks, shloka recitations, and auspicious transitions. Skip repetitive narration, long explanations, Q&A sections, or sections where images add little value. Each selected segment should be a specific, clearly defined story beat with a vivid image opportunity. Gaps between segments can be 30 seconds to several minutes — that is correct and intentional.`
 }
 
 RESPOND with ONLY a valid JSON array, no markdown fences:
@@ -837,7 +837,10 @@ Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDurat
 ${videoDescription ? `Description: ${videoDescription}` : ""}
 ${transcriptBlock}
 
-Plan the full image timeline for this video. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations (adjust according to the video). ${mode === "full" ? "Cover every second from 0 to " + videoDuration + "s." : "Cover the best key moments."}`;
+${mode === "full"
+  ? `Plan the COMPLETE image timeline for this video covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
+  : `Select only the BEST moments for image placement — do not cover the whole video. Choose 30–55% of the video: the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
+}`;
 
     const result = await model.generateContent(userContent);
     const raw = result.response.text().trim();
