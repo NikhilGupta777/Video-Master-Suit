@@ -54,6 +54,44 @@ for (const d of [BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR, BHAGWAT_UPLOADS_DIR]) {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
+// Disk-based cleanup: delete files/dirs older than 2 hours regardless of
+// in-memory state. This handles orphaned files left after server restarts.
+const DISK_CLEANUP_AGE_MS = 2 * 60 * 60 * 1000;
+function cleanupBhagwatDirs() {
+  const cutoff = Date.now() - DISK_CLEANUP_AGE_MS;
+  for (const dir of [BHAGWAT_RENDERED_DIR, BHAGWAT_UPLOADS_DIR]) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        const p = join(dir, entry);
+        try {
+          if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+        } catch {}
+      }
+    } catch {}
+  }
+  // bhagwat_tmp can contain subdirectories — delete any that are old
+  try {
+    for (const entry of readdirSync(BHAGWAT_TMP_DIR)) {
+      const p = join(BHAGWAT_TMP_DIR, entry);
+      try {
+        const st = statSync(p);
+        if (st.mtimeMs < cutoff) {
+          if (st.isDirectory()) {
+            for (const f of readdirSync(p)) { try { unlinkSync(join(p, f)); } catch {} }
+            try { rmdirSync(p); } catch {}
+          } else {
+            unlinkSync(p);
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+}
+// Run on startup to clear any orphans left by a previous crashed/restarted server
+cleanupBhagwatDirs();
+// Then run every 30 minutes
+setInterval(cleanupBhagwatDirs, 30 * 60 * 1000);
+
 // ── Multer — audio file uploads ───────────────────────────────────────────────
 const audioUploadStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, BHAGWAT_UPLOADS_DIR),
