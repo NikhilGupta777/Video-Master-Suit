@@ -1195,7 +1195,7 @@ ${transcriptBlock}
 ${
   mode === "full"
     ? `Plan the COMPLETE image timeline for this clip covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
-    : `IMPORTANT: First, read the ENTIRE transcript above from the first line to the last. Then select the BEST image moments spread across the FULL video duration — including the OPENING section (first 30–60 seconds), the middle, and the closing. Do not skip the opening. Write vivid, specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
+    : `IMPORTANT: First, read the ENTIRE transcript above from the first line to the last. Then select the BEST image moments spread across the FULL video duration — including the OPENING section (first 30–60 seconds), the middle, and the closing. Do not skip the opening. Write vivid, specific image prompts for each selected moment. Leave gaps between segments where images are not needed you decide. For bhajans, write calm devotional imagery.`
 }`;
 
     const result = await model.generateContent(userContent);
@@ -1425,7 +1425,11 @@ async function runBhagwatRender(
     // audio is often webm/opus and copying opus into an .aac container causes
     // FFmpeg to fail or produce corrupt audio.
     // Skip for video overlay mode — clip trimming is handled via -ss/-t in FFmpeg.
-    if (!isVideoOverlayMode && clipStartSec !== undefined && clipEndSec !== undefined) {
+    if (
+      !isVideoOverlayMode &&
+      clipStartSec !== undefined &&
+      clipEndSec !== undefined
+    ) {
       const trimmedPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio_trimmed.aac`);
       await new Promise<void>((resolve, reject) => {
         const ff = spawn("ffmpeg", [
@@ -1521,9 +1525,12 @@ async function runBhagwatRender(
         blackImgPath = join(imgDir, "black_gap.png");
         await new Promise<void>((resolve) => {
           const ff = spawn("ffmpeg", [
-            "-f", "lavfi",
-            "-i", "color=black:size=1920x1080:duration=1",
-            "-vframes", "1",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:size=1920x1080:duration=1",
+            "-vframes",
+            "1",
             "-y",
             blackImgPath!,
           ]);
@@ -1544,8 +1551,8 @@ async function runBhagwatRender(
             mode === "smart" && blackImgPath
               ? blackImgPath
               : filled.length > 0
-              ? filled[filled.length - 1].imgPath
-              : clip.imgPath;
+                ? filled[filled.length - 1].imgPath
+                : clip.imgPath;
           filled.push({
             imgPath: gapImg,
             dur: clip.startSec - cursor,
@@ -1601,7 +1608,14 @@ async function runBhagwatRender(
       // Each unique overlay clip as a looped image input (available for full duration)
       const imgLoopDur = (totalDuration > 0 ? totalDuration : 3600) + 5;
       for (const clip of clips) {
-        ffArgs.push("-loop", "1", "-t", imgLoopDur.toFixed(3), "-i", clip.imgPath);
+        ffArgs.push(
+          "-loop",
+          "1",
+          "-t",
+          imgLoopDur.toFixed(3),
+          "-i",
+          clip.imgPath,
+        );
       }
 
       const filterParts: string[] = [];
@@ -1639,13 +1653,20 @@ async function runBhagwatRender(
       }
 
       ffArgs.push(
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-c:a", "aac",
-        "-b:a", "192k",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
         "-y",
         outputPath,
       );
@@ -1653,34 +1674,59 @@ async function runBhagwatRender(
       // ── Slideshow: single image — no xfade, just fade-in from black ──────────
       const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
       ffArgs.push(
-        "-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath,
+        "-loop",
+        "1",
+        "-t",
+        clips[0].dur.toFixed(3),
+        "-i",
+        clips[0].imgPath,
       );
       ffArgs.push("-i", audioFile);
       ffArgs.push(
-        "-vf", `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-c:a", "aac",
-        "-b:a", "192k",
+        "-vf",
+        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
         "-shortest",
         "-y",
         outputPath,
       );
     } else {
       // ── Slideshow: multiple images — chain xfade between consecutive pairs ───
-      const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
+      const FADE_DUR = Math.min(
+        1.2,
+        Math.min(...clips.map((c) => c.dur)) * 0.8,
+      );
       const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
 
       ffArgs.push(
-        "-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath,
+        "-loop",
+        "1",
+        "-t",
+        clips[0].dur.toFixed(3),
+        "-i",
+        clips[0].imgPath,
       );
       for (let i = 1; i < clips.length; i++) {
         ffArgs.push(
-          "-loop", "1", "-t", (clips[i].dur + FADE_DUR).toFixed(3),
-          "-i", clips[i].imgPath,
+          "-loop",
+          "1",
+          "-t",
+          (clips[i].dur + FADE_DUR).toFixed(3),
+          "-i",
+          clips[i].imgPath,
         );
       }
       ffArgs.push("-i", audioFile);
@@ -1705,16 +1751,26 @@ async function runBhagwatRender(
 
       const audioInputIdx = clips.length;
       ffArgs.push(
-        "-filter_complex", filterParts.join(";"),
-        "-map", "[vout]",
-        "-map", `${audioInputIdx}:a`,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-c:a", "aac",
-        "-b:a", "192k",
+        "-filter_complex",
+        filterParts.join(";"),
+        "-map",
+        "[vout]",
+        "-map",
+        `${audioInputIdx}:a`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
         "-shortest",
         "-y",
         outputPath,
