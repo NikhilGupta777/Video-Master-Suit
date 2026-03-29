@@ -421,6 +421,94 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
   );
 }
 
+// ── Audio Upload Zone ──────────────────────────────────────────────────────────
+function AudioUploadZone({
+  uploadedFile,
+  uploading,
+  uploadError,
+  onFileSelected,
+  onRemove,
+}: {
+  uploadedFile: { audioId: string; filename: string; sizeBytes: number } | null;
+  uploading: boolean;
+  uploadError: string;
+  onFileSelected: (file: File) => void;
+  onRemove: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) onFileSelected(file);
+  };
+
+  const formatBytes = (b: number) => {
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  if (uploadedFile) {
+    return (
+      <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3">
+        <Music className="w-4 h-4 text-green-400 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-white/80 font-medium truncate">{uploadedFile.filename}</p>
+          <p className="text-xs text-white/30">{formatBytes(uploadedFile.sizeBytes)} · Ready</p>
+        </div>
+        <button
+          onClick={onRemove}
+          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-red-400 transition-colors"
+          title="Remove file"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+        onClick={() => inputRef.current?.click()}
+        className={cn(
+          "border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all",
+          dragging
+            ? "border-amber-500/70 bg-amber-500/10"
+            : "border-white/15 bg-white/3 hover:border-white/30 hover:bg-white/5",
+          uploading && "pointer-events-none opacity-60",
+        )}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="audio/*,video/mp4,video/webm,.mp3,.wav,.m4a,.ogg,.flac,.aac,.opus,.wma,.amr"
+          className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) onFileSelected(f); }}
+        />
+        {uploading ? (
+          <div className="flex flex-col items-center gap-2">
+            <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+            <p className="text-sm text-white/60">Uploading…</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-2">
+            <Upload className="w-8 h-8 text-white/30" />
+            <p className="text-sm text-white/60 font-medium">Drop audio file here or click to browse</p>
+            <p className="text-xs text-white/30">MP3, WAV, M4A, MP4, OGG, FLAC, AAC, OPUS, WMA · up to 5 GB</p>
+          </div>
+        )}
+      </div>
+      {uploadError && <p className="text-red-400 text-xs mt-2 text-center">{uploadError}</p>}
+    </div>
+  );
+}
+
 // ── Main Bhagwat Editor ───────────────────────────────────────────────────────
 function BhagwatEditor({
   BASE, url, setUrl,
@@ -432,6 +520,11 @@ function BhagwatEditor({
   clipRange?: { startSec: number; endSec: number; title: string };
   onClearClip?: () => void;
 }) {
+  const [sourceMode, setSourceMode] = useState<"youtube" | "upload">("youtube");
+  const [uploadedFile, setUploadedFile] = useState<{ audioId: string; filename: string; sizeBytes: number } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
   const [mode, setMode] = useState<"full" | "smart">("full");
   const [timeline, setTimeline] = useState<TimelineSegment[] | null>(null);
   const [videoTitle, setVideoTitle] = useState("");
@@ -474,6 +567,91 @@ function BhagwatEditor({
   // Cleanup: close any open EventSource when the component unmounts
   useEffect(() => { return () => { esRef.current?.close(); }; }, []);
 
+  // Cleanup: delete uploaded audio on unmount
+  useEffect(() => {
+    return () => {
+      if (uploadedFile) {
+        fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadedFile?.audioId]);
+
+  const handleFileSelected = async (file: File) => {
+    setUploading(true);
+    setUploadError("");
+    // Delete previous upload if any
+    if (uploadedFile) {
+      fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+      setUploadedFile(null);
+    }
+    // Reset editor state
+    setPhase("idle");
+    setTimeline(null);
+    setDownloadUrl(null);
+    setErrorMsg("");
+    setSuggestions([]);
+    setReviewText("");
+    setAutoImprovedCount(null);
+    setReviewing(false);
+    hasAutoReviewedRef.current = false;
+
+    try {
+      const formData = new FormData();
+      formData.append("audio", file);
+      const res = await fetch(`${BASE}/api/bhagwat/upload-audio`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Upload failed" }));
+        throw new Error(err.error ?? "Upload failed");
+      }
+      const data = await res.json();
+      setUploadedFile({ audioId: data.audioId, filename: data.filename ?? file.name, sizeBytes: data.sizeBytes ?? file.size });
+    } catch (err: any) {
+      setUploadError(err.message ?? "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemoveFile = () => {
+    if (uploadedFile) {
+      fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+    }
+    setUploadedFile(null);
+    setUploadError("");
+    setPhase("idle");
+    setTimeline(null);
+    setDownloadUrl(null);
+    setErrorMsg("");
+    setSuggestions([]);
+    setReviewText("");
+    setAutoImprovedCount(null);
+    setReviewing(false);
+    hasAutoReviewedRef.current = false;
+  };
+
+  const handleSwitchSource = (next: "youtube" | "upload") => {
+    if (next === sourceMode) return;
+    // Clean up uploaded file when switching back to YouTube
+    if (next === "youtube" && uploadedFile) {
+      fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+      setUploadedFile(null);
+    }
+    setSourceMode(next);
+    setPhase("idle");
+    setTimeline(null);
+    setDownloadUrl(null);
+    setErrorMsg("");
+    setSuggestions([]);
+    setReviewText("");
+    setAutoImprovedCount(null);
+    setReviewing(false);
+    hasAutoReviewedRef.current = false;
+  };
+
   // Auto-trigger review as soon as analysis completes (but do NOT auto-render)
   useEffect(() => {
     if (phase === "analyzed" && timeline && !hasAutoReviewedRef.current) {
@@ -502,7 +680,11 @@ function BhagwatEditor({
   }, [phase, downloadUrl, downloadFilename, videoTitle]);
 
   const handleAnalyze = async () => {
-    if (!url.trim()) { toast({ title: "Paste a YouTube URL first", variant: "destructive" }); return; }
+    if (sourceMode === "youtube") {
+      if (!url.trim()) { toast({ title: "Paste a YouTube URL first", variant: "destructive" }); return; }
+    } else {
+      if (!uploadedFile) { toast({ title: "Upload an audio file first", variant: "destructive" }); return; }
+    }
     esRef.current?.close();
     setPhase("analyzing");
     setTimeline(null);
@@ -520,12 +702,25 @@ function BhagwatEditor({
     });
 
     try {
-      const res = await fetch(`${BASE}/api/bhagwat/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
-      });
-      const { jobId } = await res.json();
+      let jobId: string;
+      if (sourceMode === "youtube") {
+        const res = await fetch(`${BASE}/api/bhagwat/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
+        });
+        const data = await res.json();
+        jobId = data.jobId;
+      } else {
+        const res = await fetch(`${BASE}/api/bhagwat/analyze-audio`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audioId: uploadedFile!.audioId, mode }),
+        });
+        const data = await res.json();
+        jobId = data.jobId;
+      }
+
       const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${jobId}`);
       esRef.current = es;
 
@@ -615,12 +810,18 @@ function BhagwatEditor({
     setRenderMessage("Starting…");
 
     try {
-      const res = await fetch(`${BASE}/api/bhagwat/render`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, timeline: tl, videoDuration, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
-      });
-      const { jobId } = await res.json();
+      const renderRes = await (sourceMode === "youtube"
+        ? fetch(`${BASE}/api/bhagwat/render`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, timeline: tl, videoDuration, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
+          })
+        : fetch(`${BASE}/api/bhagwat/render-audio`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration }),
+          }));
+      const { jobId } = await renderRes.json();
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
       esRef.current = es;
 
@@ -702,16 +903,55 @@ function BhagwatEditor({
       {/* Render History */}
       <RenderHistory history={history} onClear={() => saveHistory([])} />
 
-      {/* URL + Mode */}
+      {/* Audio Source + Mode */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Wand2 className="w-4 h-4 text-amber-400" />
           Create Devotional Image Video
         </h3>
 
+        {/* Source toggle */}
+        <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1">
+          <button
+            onClick={() => handleSwitchSource("youtube")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all",
+              sourceMode === "youtube"
+                ? "bg-amber-600/70 text-white shadow-sm"
+                : "text-white/45 hover:text-white/70"
+            )}
+          >
+            <Youtube className="w-3.5 h-3.5" />
+            YouTube Video
+          </button>
+          <button
+            onClick={() => handleSwitchSource("upload")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all",
+              sourceMode === "upload"
+                ? "bg-violet-600/70 text-white shadow-sm"
+                : "text-white/45 hover:text-white/70"
+            )}
+          >
+            <Headphones className="w-3.5 h-3.5" />
+            Upload Audio
+          </button>
+        </div>
+
+        {/* Upload zone (only in upload mode) */}
+        {sourceMode === "upload" && (
+          <AudioUploadZone
+            uploadedFile={uploadedFile}
+            uploading={uploading}
+            uploadError={uploadError}
+            onFileSelected={handleFileSelected}
+            onRemove={handleRemoveFile}
+          />
+        )}
+
         <div className="flex gap-2">
           {([
-            { v: "full",  label: "Full Coverage", desc: "AI places images throughout the entire video from start to end" },
+            { v: "full",  label: "Full Coverage", desc: "AI places images throughout the entire audio from start to end" },
             { v: "smart", label: "AI Smart Placement", desc: "AI selects the most impactful moments for image overlays" },
           ] as const).map(opt => (
             <button
@@ -732,13 +972,19 @@ function BhagwatEditor({
 
         <Button
           onClick={handleAnalyze}
-          disabled={phase === "analyzing" || phase === "rendering" || reviewing}
+          disabled={
+            phase === "analyzing" || phase === "rendering" || reviewing ||
+            (sourceMode === "upload" && !uploadedFile) ||
+            uploading
+          }
           className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30"
         >
           {phase === "analyzing" ? (
             <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</>
           ) : reviewing ? (
             <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> AI reviewing plan…</>
+          ) : uploading ? (
+            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Uploading…</>
           ) : (
             <><Bot className="w-4 h-4 mr-2" /> Analyze & Generate Timeline</>
           )}
@@ -1017,6 +1263,10 @@ function BhagwatEditor({
               onClick={() => {
                 setPhase("idle"); setTimeline(null); setDownloadUrl(null);
                 setUrl(""); setSuggestions([]); setReviewText("");
+                if (uploadedFile) {
+                  fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+                  setUploadedFile(null);
+                }
               }}
               className="w-full bg-white/5 hover:bg-white/10 border-white/10 text-white/50"
             >
