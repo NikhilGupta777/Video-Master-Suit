@@ -7,6 +7,7 @@ import {
   unlinkSync,
   readdirSync,
   rmdirSync,
+  statSync,
 } from "fs";
 import { join, basename } from "path";
 import { tmpdir } from "os";
@@ -17,6 +18,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
+import multer from "multer";
+import { AssemblyAI } from "assemblyai";
 
 const router: Router = Router();
 
@@ -45,10 +48,51 @@ const PYTHON_ENV = {
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 const BHAGWAT_RENDERED_DIR = join(DOWNLOAD_DIR, "bhagwat_rendered");
 const BHAGWAT_TMP_DIR = join(DOWNLOAD_DIR, "bhagwat_tmp");
+const BHAGWAT_UPLOADS_DIR = join(DOWNLOAD_DIR, "bhagwat_uploads");
 
-for (const d of [BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR]) {
+for (const d of [BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR, BHAGWAT_UPLOADS_DIR]) {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
+
+// ── Multer — audio file uploads ───────────────────────────────────────────────
+const audioUploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, BHAGWAT_UPLOADS_DIR),
+  filename: (_req, _file, cb) => {
+    const ext = _file.originalname.match(/\.[^.]+$/)?.[0]?.toLowerCase() ?? ".mp3";
+    cb(null, `${randomUUID()}${ext}`);
+  },
+});
+const audioUpload = multer({
+  storage: audioUploadStorage,
+  limits: { fileSize: 5 * 1024 * 1024 * 1024 }, // 5 GB (AssemblyAI max)
+  fileFilter: (_req, file, cb) => {
+    const okExt = /\.(mp3|wav|m4a|mp4|ogg|webm|flac|aac|opus|wma|amr)$/i.test(file.originalname);
+    const okMime = file.mimetype.startsWith("audio/") || file.mimetype.startsWith("video/");
+    okExt || okMime ? cb(null, true) : cb(new Error("Only audio/video files are supported"));
+  },
+});
+
+// ── Uploaded audio store ──────────────────────────────────────────────────────
+interface UploadedAudio {
+  path: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationSec: number; // filled after AssemblyAI transcription
+  createdAt: number;
+}
+const uploadedAudios = new Map<string, UploadedAudio>();
+
+// Sweep old uploads after 2 hours
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, audio] of uploadedAudios.entries()) {
+    if (audio.createdAt < cutoff) {
+      try { unlinkSync(audio.path); } catch {}
+      uploadedAudios.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
 
 // ── Timeline segment — AI decides everything per segment ──────────────────────
 export interface TimelineSegment {
@@ -1135,6 +1179,7 @@ async function runBhagwatRender(
   videoDuration: number = 0,
   clipStartSec?: number,
   clipEndSec?: number,
+  localAudioPath?: string,
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
@@ -1158,40 +1203,42 @@ async function runBhagwatRender(
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-    const audioDownloadPromise = (async (): Promise<string> => {
-      let ytdlpError = "";
-      try {
-        await runYtDlp([
-          "-f",
-          "bestaudio/best",
-          "--no-playlist",
-          "--no-warnings",
-          "--no-check-certificates",
-          "-o",
-          `${audioPath}.%(ext)s`,
-          url,
-        ]);
-      } catch (err) {
-        ytdlpError = err instanceof Error ? err.message : String(err);
-        console.error(
-          "[bhagwat/render] yt-dlp audio download error:",
-          ytdlpError,
-        );
-      }
-      const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
-        f.startsWith(basename(audioPath)),
-      );
-      const resolved =
-        audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
-      if (!resolved || !existsSync(resolved)) {
-        throw new Error(
-          ytdlpError
-            ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
-            : "Failed to download audio from YouTube — please check the URL and try again",
-        );
-      }
-      return resolved;
-    })();
+    const audioDownloadPromise: Promise<string> = localAudioPath
+      ? Promise.resolve(localAudioPath)
+      : (async (): Promise<string> => {
+          let ytdlpError = "";
+          try {
+            await runYtDlp([
+              "-f",
+              "bestaudio/best",
+              "--no-playlist",
+              "--no-warnings",
+              "--no-check-certificates",
+              "-o",
+              `${audioPath}.%(ext)s`,
+              url,
+            ]);
+          } catch (err) {
+            ytdlpError = err instanceof Error ? err.message : String(err);
+            console.error(
+              "[bhagwat/render] yt-dlp audio download error:",
+              ytdlpError,
+            );
+          }
+          const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
+            f.startsWith(basename(audioPath)),
+          );
+          const resolved =
+            audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
+          if (!resolved || !existsSync(resolved)) {
+            throw new Error(
+              ytdlpError
+                ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
+                : "Failed to download audio from YouTube — please check the URL and try again",
+            );
+          }
+          return resolved;
+        })();
 
     let [audioFile, imagePaths] = await Promise.all([
       audioDownloadPromise,
@@ -1478,9 +1525,10 @@ async function runBhagwatRender(
     });
 
     // ── 5. Cleanup ────────────────────────────────────────────────────────────
-    try {
-      unlinkSync(audioFile);
-    } catch {}
+    // Don't delete user-uploaded audio; only clean up yt-dlp downloads / trimmed files we created
+    if (audioFile !== localAudioPath) {
+      try { unlinkSync(audioFile); } catch {}
+    }
     try {
       for (const f of readdirSync(imgDir))
         try {
@@ -1511,5 +1559,354 @@ async function runBhagwatRender(
     } catch {}
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUDIO UPLOAD FEATURE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── AssemblyAI transcription ──────────────────────────────────────────────────
+interface AssemblyResult {
+  transcript: string;
+  durationSec: number;
+  languageCode: string;
+  chapters: Array<{ startSec: number; endSec: number; gist: string; headline: string; summary: string }>;
+  utterances: Array<{ speaker: string; startSec: number; endSec: number; text: string }>;
+}
+
+async function transcribeWithAssemblyAI(
+  audioPath: string,
+  onProgress: (msg: string) => void,
+): Promise<AssemblyResult> {
+  if (!process.env.ASSEMBLYAI_API_KEY) throw new Error("ASSEMBLYAI_API_KEY is not configured — add it in Secrets");
+
+  const client = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY });
+
+  onProgress("Uploading audio to AssemblyAI…");
+  const transcript = await client.transcripts.transcribe({
+    audio: audioPath,
+    language_detection: true,
+    speaker_labels: true,
+    auto_chapters: true,
+    sentiment_analysis: true,
+    format_text: true,
+    speech_model: "universal-2" as any,
+  });
+
+  if (transcript.status === "error") {
+    throw new Error(`AssemblyAI transcription failed: ${transcript.error ?? "unknown error"}`);
+  }
+
+  const durationSec = transcript.audio_duration ?? 0; // seconds
+
+  const chapters = (transcript.chapters ?? []).map((c: any) => ({
+    startSec: (c.start ?? 0) / 1000,
+    endSec: (c.end ?? 0) / 1000,
+    gist: c.gist ?? "",
+    headline: c.headline ?? "",
+    summary: c.summary ?? "",
+  }));
+
+  const utterances = (transcript.utterances ?? []).map((u: any) => ({
+    speaker: u.speaker ?? "A",
+    startSec: (u.start ?? 0) / 1000,
+    endSec: (u.end ?? 0) / 1000,
+    text: u.text ?? "",
+  }));
+
+  // Build timed transcript — prefer chapters (rich context), fall back to speaker turns
+  let builtTranscript = "";
+  if (chapters.length > 0) {
+    builtTranscript = chapters
+      .map((c) => {
+        const sm = Math.floor(c.startSec / 60), ss = Math.floor(c.startSec % 60);
+        const em = Math.floor(c.endSec / 60), es = Math.floor(c.endSec % 60);
+        return `[${String(sm).padStart(2, "0")}:${String(ss).padStart(2, "0")}–${String(em).padStart(2, "0")}:${String(es).padStart(2, "0")}] ${c.headline}\n${c.summary}`;
+      })
+      .join("\n\n");
+  } else if (utterances.length > 0) {
+    builtTranscript = utterances
+      .map((u) => {
+        const mm = Math.floor(u.startSec / 60), sec = Math.floor(u.startSec % 60);
+        return `[${String(mm).padStart(2, "0")}:${String(sec).padStart(2, "0")}] ${utterances.length > 1 ? `[${u.speaker}] ` : ""}${u.text}`;
+      })
+      .join("\n");
+  } else if (transcript.text) {
+    builtTranscript = transcript.text;
+  }
+
+  return {
+    transcript: builtTranscript,
+    durationSec,
+    languageCode: transcript.language_code ?? "en",
+    chapters,
+    utterances,
+  };
+}
+
+// ── runBhagwatAnalysisFromFile ────────────────────────────────────────────────
+async function runBhagwatAnalysisFromFile(
+  jobId: string,
+  job: AnalysisJob,
+  audioId: string,
+  mode: "smart" | "full",
+): Promise<void> {
+  const emit = (event: string, data: object) => job.emitter.emit(event, data);
+  const step = (s: string, status: "running" | "done" | "warn", message: string) =>
+    emit("step", { step: s, status, message });
+  job.status = "running";
+
+  try {
+    if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
+
+    const audio = uploadedAudios.get(audioId);
+    if (!audio) throw new Error("Uploaded audio file not found — please upload again");
+
+    // ── Step 1: File metadata ─────────────────────────────────────────────────
+    step("metadata", "running", "Reading audio file…");
+    let videoDuration = 0;
+    const videoTitle = audio.originalName.replace(/\.[^.]+$/, "");
+
+    try {
+      const ffOut = await new Promise<string>((resolve, reject) => {
+        const ff = spawn("ffprobe", [
+          "-v", "error",
+          "-show_entries", "format=duration",
+          "-of", "default=noprint_wrappers=1:nokey=1",
+          audio.path,
+        ]);
+        let out = "";
+        ff.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+        ff.on("close", (code) => code === 0 ? resolve(out.trim()) : reject(new Error("ffprobe failed")));
+      });
+      videoDuration = parseFloat(ffOut) || 0;
+    } catch {}
+
+    const fileSizeMB = Math.round(audio.sizeBytes / 1024 / 1024);
+    step("metadata", "done", `"${videoTitle}" · ${formatTime(videoDuration)} · ${fileSizeMB} MB`);
+
+    // ── Step 2: AssemblyAI transcription ──────────────────────────────────────
+    step("transcript", "running", "Uploading to AssemblyAI for transcription…");
+    let transcript = "";
+
+    try {
+      const result = await transcribeWithAssemblyAI(audio.path, (msg) => {
+        step("transcript", "running", msg);
+      });
+
+      // Update duration from AssemblyAI (more accurate)
+      if (result.durationSec > 0) videoDuration = result.durationSec;
+      audio.durationSec = videoDuration;
+      transcript = result.transcript;
+
+      if (result.chapters.length > 0) {
+        step("transcript", "done",
+          `${result.chapters.length} chapters detected · ${result.languageCode} · ${formatTime(videoDuration)}`);
+      } else if (result.utterances.length > 0) {
+        step("transcript", "done",
+          `${result.utterances.length} speaker turns · ${result.languageCode} · ${formatTime(videoDuration)}`);
+      } else {
+        step("transcript", "warn", "Transcript generated but no structural data — AI will work from full text");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[bhagwat/analyze-audio] AssemblyAI error:", msg);
+      step("transcript", "warn", `Transcription failed: ${msg.slice(0, 120)}`);
+    }
+
+    if (videoDuration === 0 && !transcript) {
+      throw new Error("Could not read audio file. Please ensure it is a valid audio format.");
+    }
+
+    // ── Step 3: Gemini AI timeline ─────────────────────────────────────────────
+    step("ai", "running", "AI editor is reading the content and planning image placements…");
+
+    const transcriptBlock = transcript.length > 50
+      ? `\nTranscript:\n${sampleTranscript(transcript, 400000)}`
+      : "\n[No transcript — use audio title to infer content]";
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-pro",
+      systemInstruction: `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
+
+Your task: Listen to this audio (via transcript) exactly like an expert editor sitting at a timeline, and decide the best image to place at every moment. You must think like an editor: "what image best represents what the speaker is saying RIGHT NOW and from what time to which?"
+
+HOW TO THINK ABOUT EACH SEGMENT:
+1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of 8–12 seconds each. CRITICAL RULE: NEVER make a single katha segment longer than 12 seconds. More segments = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, traditional devotional painting style". Set imageChangeEvery to match the segment duration (8–12).
+
+2. BHAJAN / KIRTAN: Detect by repeated devotional phrases, song lyrics, musical patterns. For bhajans: calm meditative devotional imagery — peaceful deity imagery. Change images every 25–40 seconds. Mark isBhajan: true.
+
+3. SHLOKA RECITATION: Sacred imagery — open scripture, deity. 
+
+4. OPENING / CLOSING / TRANSITIONS: Auspicious imagery. 
+
+IMAGE PROMPT RULES:
+- Write in English even if transcript is Hindi
+- Be specific and vivid: scene, characters, setting, lighting, mood
+- Include style: "traditional devotional Indian painting", "realistic", etc.
+- Do NOT include: watermarks, logos, borders, modern photography
+- For deities: detailed description of appearance and scene
+
+${
+  mode === "full"
+    ? `FULL COVERAGE MODE: Every second of the audio must be covered. No gaps. Start at 0 and end at exactly ${videoDuration}s.`
+    : `SMART PLACEMENT MODE: Select only the most visually impactful 30–55% of the audio. Leave significant gaps. Pick bhajans, climactic story moments, key leela moments, shloka recitations. Gaps of 30 seconds to several minutes are correct and intentional.`
+}
+
+RESPOND with ONLY a valid JSON array, no markdown fences:
+[
+  {
+    "startSec": 0,
+    "endSec": 120,
+    "isBhajan": false,
+    "imageChangeEvery": 12,
+    "description": "Opening narration",
+    "imagePrompt": "Peaceful riverside setting at dawn, devotees reading Shreemad Bhagwat, soft morning light, incense smoke, warm devotional atmosphere"
+  }
+]`,
+    });
+
+    const userContent = `Audio: "${videoTitle}"
+Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
+${transcriptBlock}
+
+${
+  mode === "full"
+    ? `Plan the COMPLETE image timeline covering every second from 0 to ${videoDuration}s with no gaps.`
+    : `Select only the BEST moments for image placement — choose 30–55% of the duration. Leave large gaps between segments.`
+}`;
+
+    const result = await model.generateContent(userContent);
+    const raw = result.response.text().trim();
+
+    let timeline: TimelineSegment[] = [];
+    try {
+      const cleaned = raw
+        .replace(/^```(?:json)?\s*/im, "")
+        .replace(/\s*```\s*$/im, "")
+        .trim();
+      const arr = JSON.parse(cleaned);
+      if (Array.isArray(arr)) {
+        timeline = arr
+          .filter((s: any) => s && typeof s.startSec === "number" && typeof s.endSec === "number" && s.endSec > s.startSec && s.imagePrompt)
+          .map((s: any): TimelineSegment => ({
+            startSec: Math.max(0, Math.round(s.startSec)),
+            endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
+            isBhajan: s.isBhajan === true,
+            imageChangeEvery: s.isBhajan === true
+              ? Math.max(20, Math.min(40, Math.round(s.imageChangeEvery ?? 30)))
+              : Math.max(8, Math.min(12, Math.round(s.imageChangeEvery ?? 10))),
+            description: (s.description ?? "").slice(0, 150),
+            imagePrompt: (s.imagePrompt ?? "").slice(0, 600),
+          }))
+          .filter((s: TimelineSegment) => s.endSec > s.startSec + 1);
+      }
+    } catch {
+      throw new Error("AI returned invalid JSON — please try again");
+    }
+
+    if (timeline.length === 0) throw new Error("AI returned an empty timeline — please try again");
+
+    timeline.sort((a, b) => a.startSec - b.startSec);
+    if (mode === "full" && videoDuration > 0) {
+      if (timeline[0].startSec > 0) {
+        timeline.unshift({ startSec: 0, endSec: timeline[0].startSec, isBhajan: false, imageChangeEvery: 10, description: "Opening", imagePrompt: "Auspicious opening scene — ancient temple entrance, golden morning light, flowers and oil lamps, devotional atmosphere, traditional Indian painting style" });
+      }
+      const filled: TimelineSegment[] = [timeline[0]];
+      for (let i = 1; i < timeline.length; i++) {
+        const prev = filled[filled.length - 1];
+        const seg = timeline[i].startSec < prev.endSec ? { ...timeline[i], startSec: prev.endSec } : timeline[i];
+        if (seg.endSec <= seg.startSec + 1) continue;
+        if (seg.startSec > prev.endSec) filled.push({ startSec: prev.endSec, endSec: seg.startSec, isBhajan: false, imageChangeEvery: 10, description: "Continuation", imagePrompt: prev.imagePrompt });
+        filled.push(seg);
+      }
+      const last = filled[filled.length - 1];
+      if (last.startSec < videoDuration) { last.endSec = videoDuration; } else { filled.pop(); }
+      timeline = filled;
+    }
+
+    step("ai", "done", `${timeline.length} segments planned · ${timeline.filter((s) => s.isBhajan).length} bhajan sections`);
+
+    const resultData = { timeline, videoDuration, videoTitle };
+    job.status = "done";
+    job.result = resultData;
+    emit("done", resultData);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[bhagwat/analyze-audio] Error:", message);
+    job.status = "error";
+    job.error = message;
+    emit("jobError", { message });
+  }
+}
+
+// ── Audio upload route ─────────────────────────────────────────────────────────
+router.post("/bhagwat/upload-audio", (req: Request, res: Response) => {
+  audioUpload.single("audio")(req as any, res as any, (err: any) => {
+    if (err) {
+      res.status(400).json({ error: err.message ?? "Upload failed" });
+      return;
+    }
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) {
+      res.status(400).json({ error: "No audio file provided" });
+      return;
+    }
+    const audioId = randomUUID();
+    uploadedAudios.set(audioId, {
+      path: file.path,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      durationSec: 0,
+      createdAt: Date.now(),
+    });
+    res.json({ audioId, filename: file.originalname, sizeBytes: file.size, mimeType: file.mimetype });
+  });
+});
+
+// Delete uploaded audio
+router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
+  const audio = uploadedAudios.get(req.params.audioId);
+  if (!audio) { res.status(404).json({ error: "Audio not found" }); return; }
+  try { unlinkSync(audio.path); } catch {}
+  uploadedAudios.delete(req.params.audioId);
+  res.json({ ok: true });
+});
+
+// ── Analyze uploaded audio (uses same analysisJobs + SSE endpoint as YouTube) ─
+router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
+  const { audioId, mode } = req.body as { audioId: string; mode?: "smart" | "full" };
+  if (!audioId) { res.status(400).json({ error: "audioId is required" }); return; }
+  if (!uploadedAudios.has(audioId)) { res.status(404).json({ error: "Audio file not found — please upload again" }); return; }
+  const jobId = randomUUID();
+  const job: AnalysisJob = { emitter: new EventEmitter(), status: "pending", createdAt: Date.now() };
+  analysisJobs.set(jobId, job);
+  res.json({ jobId });
+  runBhagwatAnalysisFromFile(jobId, job, audioId, mode ?? "full").catch(() => {});
+});
+
+// ── Render with uploaded audio (reuses same renderJobs + SSE endpoint) ─────────
+router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
+  const { audioId, timeline, videoDuration, clipStartSec, clipEndSec } = req.body as {
+    audioId: string;
+    timeline: TimelineSegment[];
+    videoDuration?: number;
+    clipStartSec?: number;
+    clipEndSec?: number;
+  };
+  if (!audioId || !Array.isArray(timeline) || timeline.length === 0) {
+    res.status(400).json({ error: "audioId and timeline are required" });
+    return;
+  }
+  const audio = uploadedAudios.get(audioId);
+  if (!audio) { res.status(404).json({ error: "Audio file not found — please upload again" }); return; }
+
+  const jobId = randomUUID();
+  const job: RenderJob = { emitter: new EventEmitter(), status: "pending", createdAt: Date.now() };
+  renderJobs.set(jobId, job);
+  res.json({ jobId });
+  runBhagwatRender(jobId, job, "", timeline, videoDuration ?? 0, clipStartSec, clipEndSec, audio.path).catch(() => {});
+});
 
 export default router;

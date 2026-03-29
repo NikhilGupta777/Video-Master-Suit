@@ -4,6 +4,7 @@ import {
   Lock, Unlock, Film, Loader2, CheckCircle2, AlertCircle,
   Download, Wand2, Bot, FileText, Wifi, Eye, EyeOff, Sparkles, ImageIcon,
   Pencil, X, Lightbulb, ChevronDown, ChevronUp, Clock, Check, Scissors,
+  Upload, Music, Youtube, Headphones, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
