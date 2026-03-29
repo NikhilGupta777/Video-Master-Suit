@@ -540,6 +540,7 @@ function BhagwatEditor({
   const { toast } = useToast();
   const esRef = useRef<EventSource | null>(null);
 
+  const [transcriptText, setTranscriptText] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [reviewText, setReviewText] = useState("");
   const [autoImprovedCount, setAutoImprovedCount] = useState<number | null>(null);
@@ -733,6 +734,7 @@ function BhagwatEditor({
         setTimeline(d.timeline);
         setVideoTitle(d.videoTitle ?? "");
         setVideoDuration(d.videoDuration ?? 0);
+        setTranscriptText(d.transcriptText ?? "");
         setPhase("analyzed");
         es.close();
       });
@@ -759,7 +761,7 @@ function BhagwatEditor({
       const res = await fetch(`${BASE}/api/bhagwat/review-plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeline, videoTitle, videoDuration }),
+        body: JSON.stringify({ timeline, videoTitle, videoDuration, transcriptText }),
       });
       const { jobId } = await res.json();
       const es = new EventSource(`${BASE}/api/bhagwat/review-status/${jobId}`);
@@ -770,23 +772,38 @@ function BhagwatEditor({
       });
       es.addEventListener("suggestions", e => {
         const d = JSON.parse(e.data);
-        const incoming: Suggestion[] = d.suggestions ?? [];
+        const improvements: Suggestion[] = d.suggestions ?? [];
+        const newSegs: TimelineSegment[] = (d.newSegments ?? []).map((s: any) => ({
+          startSec: s.startSec,
+          endSec: s.endSec,
+          isBhajan: s.isBhajan ?? false,
+          imageChangeEvery: s.isBhajan ? 30 : 10,
+          description: s.description ?? "",
+          imagePrompt: s.imagePrompt ?? "",
+        }));
 
-        // Use timelineRef.current (not the closed-over `timeline`) so any
-        // edits the user made during the review period are preserved.
+        // Use timelineRef.current so any edits the user made during review are preserved
         const base = timelineRef.current ?? [];
-        const updatedTl = base.map((seg, i) => {
-          const match = incoming.find(s => s.segIdx === i);
+        // Apply prompt improvements to existing segments
+        const improved = base.map((seg, i) => {
+          const match = improvements.find(s => s.segIdx === i);
           return match ? { ...seg, imagePrompt: match.improvedPrompt } : seg;
         });
+        // Merge new segments (avoid overlapping existing ones)
+        const existingRanges = improved.map(s => [s.startSec, s.endSec]);
+        const validNewSegs = newSegs.filter(ns =>
+          !existingRanges.some(([a, b]) => ns.startSec < b && ns.endSec > a)
+        );
+        const merged = [...improved, ...validNewSegs].sort((a, b) => a.startSec - b.startSec);
 
-        setTimeline(updatedTl);
-        if (incoming.length > 0) setAutoImprovedCount(incoming.length);
+        const totalAdded = improvements.length + validNewSegs.length;
+        setTimeline(merged);
+        if (totalAdded > 0) setAutoImprovedCount(totalAdded);
         setSuggestions([]);
         setReviewing(false);
         es.close();
-        // Auto-render immediately with the AI-improved timeline
-        handleRender(updatedTl);
+        // Auto-render immediately with the fully improved + enriched timeline
+        handleRender(merged);
       });
       es.addEventListener("jobError", e => {
         const d = JSON.parse((e as MessageEvent).data);
@@ -1224,7 +1241,7 @@ function BhagwatEditor({
             {autoImprovedCount !== null && autoImprovedCount > 0 && (
               <p className="text-xs text-yellow-400/60 text-center flex items-center justify-center gap-1">
                 <Lightbulb className="w-3 h-3" />
-                Rendering with {autoImprovedCount} AI-reviewed scene prompt{autoImprovedCount !== 1 ? "s" : ""}
+                Rendering with {autoImprovedCount} AI improvement{autoImprovedCount !== 1 ? "s" : ""} applied (prompts & new scenes)
               </p>
             )}
             <p className="text-xs text-white/30 text-center">

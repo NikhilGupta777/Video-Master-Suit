@@ -590,10 +590,11 @@ setInterval(
 );
 
 router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
-  const { timeline, videoTitle, videoDuration } = req.body as {
+  const { timeline, videoTitle, videoDuration, transcriptText } = req.body as {
     timeline: TimelineSegment[];
     videoTitle: string;
     videoDuration: number;
+    transcriptText?: string;
   };
   if (!Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "timeline is required" });
@@ -613,6 +614,7 @@ router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
     timeline,
     videoTitle ?? "",
     videoDuration ?? 0,
+    transcriptText ?? "",
   ).catch(() => {});
 });
 
@@ -646,6 +648,7 @@ async function runBhagwatReview(
   timeline: TimelineSegment[],
   videoTitle: string,
   videoDuration: number,
+  transcriptText: string,
 ) {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
@@ -663,21 +666,45 @@ async function runBhagwatReview(
       )
       .join("\n\n");
 
-    const prompt = `You are an expert devotional video editor reviewing an AI-generated image timeline for a Bhagwat Katha video.
+    const transcriptBlock = transcriptText.trim()
+      ? `\n\nFULL TRANSCRIPT (with timestamps):\n${sampleTranscript(transcriptText, 200000)}`
+      : "";
 
-Video: "${videoTitle}" (${formatTime(videoDuration)})
+    const prompt = `You are an expert devotional video editor performing a deep review of an AI-generated image timeline for a Bhagwat Katha video. Your job is both to improve what's there AND discover what was missed.
 
-Go through each segment one by one. Think out loud: is the prompt specific enough? Does it capture exactly what the speaker is narrating? Is the style vivid and accurate? Could it be more descriptive or better matched to the story moment?
+Video: "${videoTitle}" (${formatTime(videoDuration)})${transcriptBlock}
 
+CURRENT IMAGE PLAN (${timeline.length} segments):
 ${segmentList}
 
-After reviewing each segment, end your response with EXACTLY this block (no extra text after END_SUGGESTIONS):
+Perform two tasks:
+
+TASK 1 — IMPROVE EXISTING PROMPTS:
+For each segment, ask: Is this prompt vivid and specific to what the speaker is narrating at this exact moment? Could it be more detailed, more accurate to the story, or better suited for AI image generation? Think out loud about each one, then suggest improvements for any that are weak or generic.
+
+TASK 2 — FIND COVERAGE GAPS:
+Look at the transcript timestamps against the current plan coverage. Identify significant moments in the narration that have NO image planned, such as:
+- Key story beats or character introductions not covered
+- Dramatic moments, reveals, or emotional peaks without visuals
+- Important shlokas, bhajans, or divine descriptions that deserve an image
+- Any section of the transcript where the current plan leaves a notable gap
+
+For each gap, suggest a new segment with precise timing, description, and a vivid image prompt.
+
+After your analysis, end your response with EXACTLY this JSON block (no extra text after END_SUGGESTIONS):
 
 SUGGESTIONS_JSON
-[{"segIdx": 0, "reason": "brief reason", "improvedPrompt": "full improved prompt here"}, ...]
+{
+  "improvements": [
+    {"segIdx": 0, "reason": "brief reason", "improvedPrompt": "full improved prompt here"}
+  ],
+  "newSegments": [
+    {"startSec": 15, "endSec": 28, "description": "brief description of the moment", "imagePrompt": "full image generation prompt", "isBhajan": false}
+  ]
+}
 END_SUGGESTIONS
 
-Only include segments that genuinely need improvement. If the plan is good, the array can be empty.`;
+Both arrays can be empty if there's nothing to improve or add. Only suggest new segments for genuinely uncovered moments, not for sections already covered by the plan.`;
 
     const result = await model.generateContentStream(prompt);
 
@@ -691,18 +718,24 @@ Only include segments that genuinely need improvement. If the plan is good, the 
     }
 
     // Parse structured suggestions from the marker block
-    let suggestions: any[] = [];
+    let improvements: any[] = [];
+    let newSegments: any[] = [];
     const match = fullText.match(
       /SUGGESTIONS_JSON\s*([\s\S]*?)\s*END_SUGGESTIONS/,
     );
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
-        if (Array.isArray(parsed)) suggestions = parsed;
+        if (parsed.improvements && Array.isArray(parsed.improvements))
+          improvements = parsed.improvements;
+        if (parsed.newSegments && Array.isArray(parsed.newSegments))
+          newSegments = parsed.newSegments.filter(
+            (s: any) => typeof s.startSec === "number" && typeof s.endSec === "number" && s.endSec > s.startSec + 1
+          );
       } catch {}
     }
 
-    emit("suggestions", { suggestions });
+    emit("suggestions", { suggestions: improvements, newSegments });
     job.status = "done";
   } catch (err) {
     const message = err instanceof Error ? err.message : "Review failed";
@@ -1189,7 +1222,7 @@ ${
       `${timeline.length} segments planned · ${timeline.filter((s) => s.isBhajan).length} bhajan sections`,
     );
 
-    const resultData = { timeline, videoDuration, videoTitle };
+    const resultData = { timeline, videoDuration, videoTitle, transcriptText: transcript };
     job.status = "done";
     job.result = resultData;
     emit("done", resultData);
@@ -1449,8 +1482,8 @@ async function runBhagwatRender(
         "fast",
         "-crf",
         "18",
-        "-profile:v",
-        "high",
+        "-pix_fmt",
+        "yuv420p",
         "-movflags",
         "+faststart",
         "-c:a",
@@ -1520,8 +1553,8 @@ async function runBhagwatRender(
         "fast",
         "-crf",
         "18",
-        "-profile:v",
-        "high",
+        "-pix_fmt",
+        "yuv420p",
         "-movflags",
         "+faststart",
         "-c:a",
@@ -1876,7 +1909,7 @@ ${
 
     step("ai", "done", `${timeline.length} segments planned · ${timeline.filter((s) => s.isBhajan).length} bhajan sections`);
 
-    const resultData = { timeline, videoDuration, videoTitle };
+    const resultData = { timeline, videoDuration, videoTitle, transcriptText: transcript };
     job.status = "done";
     job.result = resultData;
     emit("done", resultData);
