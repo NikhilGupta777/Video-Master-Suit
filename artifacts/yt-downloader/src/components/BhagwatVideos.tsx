@@ -389,9 +389,11 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
   const esRef = useRef<EventSource | null>(null);
 
   const [reviewing, setReviewing] = useState(false);
+  const [reviewText, setReviewText] = useState("");
   const [autoImprovedCount, setAutoImprovedCount] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const hasAutoReviewedRef = useRef(false);
+  const reviewScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [history, setHistory] = useState<HistoryEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]"); } catch { return []; }
@@ -440,6 +442,7 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
     setDownloadUrl(null);
     setErrorMsg("");
     setSuggestions([]);
+    setReviewText("");
     setAutoImprovedCount(null);
     setReviewing(false);
     hasAutoReviewedRef.current = false;
@@ -505,9 +508,22 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
       });
       es.addEventListener("suggestions", e => {
         const d = JSON.parse(e.data);
-        setSuggestions(d.suggestions ?? []);
+        const incoming: Suggestion[] = d.suggestions ?? [];
+
+        // Apply all suggestions to the current timeline (captured in this closure)
+        const updatedTl = (timeline ?? []).map((seg, i) => {
+          const match = incoming.find(s => s.segIdx === i);
+          return match ? { ...seg, imagePrompt: match.improvedPrompt } : seg;
+        });
+
+        setTimeline(updatedTl);
+        if (incoming.length > 0) setAutoImprovedCount(incoming.length);
+        setSuggestions([]);
         setReviewing(false);
         es.close();
+
+        // Auto-render immediately with the updated timeline
+        handleRender(updatedTl);
       });
       es.addEventListener("jobError", e => {
         const d = JSON.parse((e as MessageEvent).data);
@@ -522,8 +538,9 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
     }
   };
 
-  const handleRender = async () => {
-    if (!timeline) return;
+  const handleRender = async (timelineOverride?: TimelineSegment[]) => {
+    const tl = timelineOverride ?? timeline;
+    if (!tl) return;
     esRef.current?.close();
     setPhase("rendering");
     setRenderPercent(0);
@@ -533,7 +550,7 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
       const res = await fetch(`${BASE}/api/bhagwat/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, timeline, videoDuration }),
+        body: JSON.stringify({ url, timeline: tl, videoDuration }),
       });
       const { jobId } = await res.json();
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
@@ -870,6 +887,12 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
                 transition={{ duration: 0.5 }}
               />
             </div>
+            {autoImprovedCount !== null && autoImprovedCount > 0 && (
+              <p className="text-xs text-yellow-400/60 text-center flex items-center justify-center gap-1">
+                <Lightbulb className="w-3 h-3" />
+                AI auto-improved {autoImprovedCount} scene prompt{autoImprovedCount !== 1 ? "s" : ""} before rendering
+              </p>
+            )}
             <p className="text-xs text-white/30 text-center">
               {renderPercent < 60
                 ? "Audio downloading & AI images generating in parallel"
