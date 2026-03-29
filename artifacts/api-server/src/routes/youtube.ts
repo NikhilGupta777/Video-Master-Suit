@@ -28,10 +28,23 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 // Make yt-dlp (installed via uv sync) visible to the system Python.
 // process.cwd() is always the workspace root (both dev and production).
 const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
+
+// Dynamically resolve the correct python3.x site-packages directory so this
+// works regardless of which Python minor version is active in production.
+function resolvePythonSitePackages(workspaceRoot: string): string {
+  const libRoot = join(workspaceRoot, ".pythonlibs", "lib");
+  try {
+    const entries = readdirSync(libRoot);
+    const pyDir = entries.find((e) => /^python3\.\d+$/.test(e));
+    if (pyDir) return join(libRoot, pyDir, "site-packages");
+  } catch {}
+  return join(libRoot, "python3.11", "site-packages"); // safe fallback
+}
+
 const PYTHON_ENV = {
   ...process.env,
   PATH: `${_workspaceRoot}/.pythonlibs/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
-  PYTHONPATH: `${_workspaceRoot}/.pythonlibs/lib/python3.11/site-packages`,
+  PYTHONPATH: resolvePythonSitePackages(_workspaceRoot),
 };
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
@@ -109,10 +122,28 @@ interface DownloadJob {
 const jobs = new Map<string, DownloadJob>();
 
 // Base args applied to every yt-dlp call.
-// tv_embedded gives full format list + bypasses bot detection; android/ios are fallbacks.
+// Client priority: mweb is most reliable from cloud IPs in 2026; tv_embedded/android/ios
+// are fallbacks. The web client with proper headers is tried first for format resolution.
 const BASE_YTDLP_ARGS = [
   "--extractor-args",
-  "youtube:player_client=tv_embedded,android,ios",
+  "youtube:player_client=mweb,web,tv_embedded,android,ios",
+  // Retry on network errors and rate-limits
+  "--retries", "3",
+  "--fragment-retries", "3",
+  "--extractor-retries", "3",
+  // Prevent infinite hangs on slow/broken connections
+  "--socket-timeout", "30",
+  // Browser-like headers to avoid bot detection
+  "--add-headers",
+  [
+    "Accept-Language:en-US,en;q=0.9",
+    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer:https://www.youtube.com/",
+    "Origin:https://www.youtube.com",
+  ].join(";"),
+  // Full Chrome-like user agent
+  "--user-agent",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
 function runYtDlp(args: string[]): Promise<string> {
@@ -240,10 +271,28 @@ function pickBestSubtitleUrl(
   return null;
 }
 
-// Run yt-dlp WITHOUT the JS runtime args (safe for subtitle-only fetches)
+// Subtitle-safe yt-dlp args: use mweb/android clients (no tv_embedded — it breaks sub fetching)
+// but still include all anti-bot headers and retry/timeout settings.
+const SUBS_YTDLP_ARGS = [
+  "--extractor-args",
+  "youtube:player_client=mweb,android,ios",
+  "--retries", "3",
+  "--extractor-retries", "3",
+  "--socket-timeout", "30",
+  "--add-headers",
+  [
+    "Accept-Language:en-US,en;q=0.9",
+    "Referer:https://www.youtube.com/",
+    "Origin:https://www.youtube.com",
+  ].join(";"),
+  "--user-agent",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+];
+
+// Run yt-dlp for subtitle-only fetches (uses mweb/android — tv_embedded breaks subs)
 function runYtDlpForSubs(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...args], {
+    const proc = spawn("python3", ["-m", "yt_dlp", ...SUBS_YTDLP_ARGS, ...args], {
       env: PYTHON_ENV,
     });
     let stderr = "";
@@ -253,7 +302,7 @@ function runYtDlpForSubs(args: string[]): Promise<void> {
     proc.on("close", (code) => {
       if (code === 0) resolve();
       else
-        reject(new Error(stderr.slice(-600) || `yt-dlp subs exited ${code}`));
+        reject(new Error(stderr.slice(-800) || `yt-dlp subs exited ${code}`));
     });
     proc.on("error", (err) =>
       reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
@@ -794,10 +843,16 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
       return;
     }
 
-    // Proxy the request to the CDN with Range forwarding
+    // Proxy the request to the CDN with Range forwarding.
+    // YouTube CDN validates Referer and Origin — omitting them causes 403.
     const headers: Record<string, string> = {
-      "User-Agent": "Mozilla/5.0",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
       "Accept-Encoding": "identity",
+      "Referer": "https://www.youtube.com/",
+      "Origin": "https://www.youtube.com",
     };
     const rangeHeader = req.headers["range"];
     if (rangeHeader) headers["Range"] = rangeHeader;

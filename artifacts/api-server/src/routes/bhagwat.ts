@@ -23,10 +23,23 @@ const router: Router = Router();
 // Make yt-dlp (installed via uv sync) visible to the system Python.
 // process.cwd() is always the workspace root (both dev and production).
 const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
+
+// Dynamically resolve the correct python3.x site-packages directory so this
+// works regardless of which Python minor version is active in production.
+function resolvePythonSitePackages(workspaceRoot: string): string {
+  const libRoot = join(workspaceRoot, ".pythonlibs", "lib");
+  try {
+    const entries = readdirSync(libRoot);
+    const pyDir = entries.find((e) => /^python3\.\d+$/.test(e));
+    if (pyDir) return join(libRoot, pyDir, "site-packages");
+  } catch {}
+  return join(libRoot, "python3.11", "site-packages"); // safe fallback
+}
+
 const PYTHON_ENV = {
   ...process.env,
   PATH: `${_workspaceRoot}/.pythonlibs/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
-  PYTHONPATH: `${_workspaceRoot}/.pythonlibs/lib/python3.11/site-packages`,
+  PYTHONPATH: resolvePythonSitePackages(_workspaceRoot),
 };
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
@@ -206,8 +219,42 @@ async function generateAllSegmentImages(
   return imagePaths;
 }
 
-// Base args: tv_embedded gives full formats + bypasses bot detection; android/ios are fallbacks
-const YTDLP_BASE_ARGS = ["--extractor-args", "youtube:player_client=tv_embedded,android,ios"];
+// Base args: mweb is most reliable from cloud IPs in 2026; tv_embedded/android/ios are fallbacks.
+// Includes retry logic, socket timeout, and full browser headers to bypass bot detection.
+const YTDLP_BASE_ARGS = [
+  "--extractor-args",
+  "youtube:player_client=mweb,web,tv_embedded,android,ios",
+  "--retries", "3",
+  "--fragment-retries", "3",
+  "--extractor-retries", "3",
+  "--socket-timeout", "30",
+  "--add-headers",
+  [
+    "Accept-Language:en-US,en;q=0.9",
+    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer:https://www.youtube.com/",
+    "Origin:https://www.youtube.com",
+  ].join(";"),
+  "--user-agent",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+];
+
+// Subtitle-safe args: use mweb/android only (no tv_embedded — it breaks subtitle fetching)
+const YTDLP_SUBS_ARGS = [
+  "--extractor-args",
+  "youtube:player_client=mweb,android,ios",
+  "--retries", "3",
+  "--extractor-retries", "3",
+  "--socket-timeout", "30",
+  "--add-headers",
+  [
+    "Accept-Language:en-US,en;q=0.9",
+    "Referer:https://www.youtube.com/",
+    "Origin:https://www.youtube.com",
+  ].join(";"),
+  "--user-agent",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+];
 
 // ── yt-dlp helpers ────────────────────────────────────────────────────────────
 function runYtDlp(args: string[]): Promise<string> {
@@ -226,7 +273,7 @@ function runYtDlp(args: string[]): Promise<string> {
     proc.on("close", (code) =>
       code === 0
         ? resolve(out.trim())
-        : reject(new Error(err.slice(-800) || `yt-dlp exited ${code}`)),
+        : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`)),
     );
   });
 }
@@ -235,8 +282,8 @@ function runYtDlpForSubs(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "",
       err = "";
-    const proc = spawn("python3", ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args], {
-      env: { ...PYTHON_ENV, YTDLP_NO_LAZY_EXTRACTORS: "1" },
+    const proc = spawn("python3", ["-m", "yt_dlp", ...YTDLP_SUBS_ARGS, ...args], {
+      env: PYTHON_ENV,
     });
     proc.stdout.on("data", (d) => {
       out += d.toString();
@@ -245,7 +292,7 @@ function runYtDlpForSubs(args: string[]): Promise<string> {
       err += d.toString();
     });
     proc.on("close", (code) =>
-      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-300))),
+      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-500))),
     );
   });
 }
