@@ -56,7 +56,7 @@ const STEP_META: Record<StepName, { label: string; icon: any }> = {
   ai:         { label: "AI analysis",  icon: Bot },
 };
 
-interface Props { url: string; onEditClip?: (clip: BestClip) => void; }
+interface Props { url: string; onEditClip?: (clip: BestClip) => void; defaultInstructions?: string; }
 export interface BestClipsHandle { startAnalyze: () => void; }
 
 function formatDuration(seconds: number): string {
@@ -88,10 +88,10 @@ function formatRemaining(remainingSec: number): string {
   return `~${Math.ceil(remainingSec / 60)}min left`;
 }
 
-export const BestClips = forwardRef(function BestClips({ url, onEditClip }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
+export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaultInstructions }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
-  const [customInstructions, setCustomInstructions] = useState("");
+  const [customInstructions, setCustomInstructions] = useState(defaultInstructions ?? "");
   const [clips, setClips] = useState<BestClip[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasTranscript, setHasTranscript] = useState(false);

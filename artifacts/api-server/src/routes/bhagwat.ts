@@ -44,6 +44,11 @@ export interface TimelineSegment {
   imagePrompt: string; // specific Gemini image-gen prompt for this exact story moment
 }
 
+// Use Replit's built-in GOOGLE_API_KEY as fallback when GEMINI_API_KEY is not set
+if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
+  process.env.GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
+}
+
 // ── Gemini image generation ───────────────────────────────────────────────────
 function getImageGenClient(): GoogleGenAI {
   // Prefer direct API key — supports latest models like gemini-3.1-flash-image-preview

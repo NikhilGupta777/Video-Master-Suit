@@ -1060,7 +1060,11 @@ export function BhagwatVideos() {
         />
       </div>
       <div className={tab === "clips" ? undefined : "hidden"}>
-        <BestClips url={url} onEditClip={handleEditClip} />
+        <BestClips
+          url={url}
+          onEditClip={handleEditClip}
+          defaultInstructions="Find all complete devotional stories, Bhagwat Katha narratives, bhajan sequences, Krishna Leela episodes, Ram Katha stories, Mahabharat discussions, and spiritual discourses. Focus on segments that have a clear narrative arc — a complete story, teaching, or devotional moment from start to finish. Also find the best standalone bhajan or kirtan clips."
+        />
       </div>
     </motion.div>
   );

@@ -20,6 +20,11 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const router: IRouter = Router();
 
+// Use Replit's built-in GOOGLE_API_KEY as fallback when GEMINI_API_KEY is not set
+if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
+  process.env.GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
+}
+
 // Make yt-dlp (installed in the uv venv) visible to the system Python
 const PYTHON_ENV = {
   ...process.env,
