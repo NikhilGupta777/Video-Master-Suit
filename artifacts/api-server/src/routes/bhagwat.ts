@@ -1592,7 +1592,7 @@ async function transcribeWithAssemblyAI(
     auto_chapters: true,
     sentiment_analysis: true,
     format_text: true,
-    speech_models: "universal-2" as any,
+    speech_model: "best",
   });
 
   if (transcript.status === "error") {
