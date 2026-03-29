@@ -1347,10 +1347,17 @@ async function runBhagwatRender(
     if (!process.env.GEMINI_API_KEY)
       throw new Error("GEMINI_API_KEY is not configured");
 
-    // ── 1+2. Download audio AND generate images in parallel ───────────────────
+    // ── 1+2. Download media AND generate images in parallel ───────────────────
+    // Smart mode with a YouTube URL → download the full video (audio + video)
+    // so we can overlay AI images on top of the real footage.
+    // All other cases → audio-only download (cheaper, faster).
+    const isVideoOverlayMode = mode === "smart" && !localAudioPath && !!url;
+
     emit("progress", {
       percent: 3,
-      message: `Downloading audio & generating ${timeline.length} images in parallel…`,
+      message: isVideoOverlayMode
+        ? `Downloading video & generating ${timeline.length} images in parallel…`
+        : `Downloading audio & generating ${timeline.length} images in parallel…`,
     });
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -1362,7 +1369,11 @@ async function runBhagwatRender(
           try {
             await runYtDlp([
               "-f",
-              "bestaudio/best",
+              // Video overlay mode: download best combined format (video + audio).
+              // Standard mode: audio only (smaller, faster).
+              isVideoOverlayMode
+                ? "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+                : "bestaudio/best",
               "--no-playlist",
               "--no-warnings",
               "--no-check-certificates",
@@ -1373,7 +1384,7 @@ async function runBhagwatRender(
           } catch (err) {
             ytdlpError = err instanceof Error ? err.message : String(err);
             console.error(
-              "[bhagwat/render] yt-dlp audio download error:",
+              "[bhagwat/render] yt-dlp download error:",
               ytdlpError,
             );
           }
@@ -1385,8 +1396,8 @@ async function runBhagwatRender(
           if (!resolved || !existsSync(resolved)) {
             throw new Error(
               ytdlpError
-                ? `Audio download failed: ${ytdlpError.slice(0, 300)}`
-                : "Failed to download audio from YouTube — please check the URL and try again",
+                ? `${isVideoOverlayMode ? "Video" : "Audio"} download failed: ${ytdlpError.slice(0, 300)}`
+                : `Failed to download ${isVideoOverlayMode ? "video" : "audio"} from YouTube — please check the URL and try again`,
             );
           }
           return resolved;
@@ -1407,7 +1418,8 @@ async function runBhagwatRender(
     // Always re-encode to aac (-c:a aac) instead of -c:a copy, because YouTube
     // audio is often webm/opus and copying opus into an .aac container causes
     // FFmpeg to fail or produce corrupt audio.
-    if (clipStartSec !== undefined && clipEndSec !== undefined) {
+    // Skip for video overlay mode — clip trimming is handled via -ss/-t in FFmpeg.
+    if (!isVideoOverlayMode && clipStartSec !== undefined && clipEndSec !== undefined) {
       const trimmedPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio_trimmed.aac`);
       await new Promise<void>((resolve, reject) => {
         const ff = spawn("ffmpeg", [
@@ -1491,22 +1503,41 @@ async function runBhagwatRender(
       }
     }
 
-    // ── Gap filling — critical for Smart Placement mode ────────────────────────
-    // gap filling, the image track ends early and -shortest cuts the audio to
-    // match, producing a video that is a fraction of the original length.
-    // We fill every gap with the nearest segment's image so the full audio
-    // track plays through to the end.
-    if (videoDuration > 0 && clips.length > 0) {
+    // ── Gap filling (slideshow modes only) ────────────────────────────────────
+    // In image-slideshow mode (full coverage or smart with uploaded audio),
+    // fill gaps so the image track covers the full audio duration — otherwise
+    // FFmpeg's -shortest flag cuts the audio when images run out.
+    // In video overlay mode the original video covers all gaps, so skip this.
+    if (!isVideoOverlayMode && videoDuration > 0 && clips.length > 0) {
+      // For smart (uploaded audio) mode: fill gaps with a black frame.
+      let blackImgPath: string | null = null;
+      if (mode === "smart") {
+        blackImgPath = join(imgDir, "black_gap.png");
+        await new Promise<void>((resolve) => {
+          const ff = spawn("ffmpeg", [
+            "-f", "lavfi",
+            "-i", "color=black:size=1920x1080:duration=1",
+            "-vframes", "1",
+            "-y",
+            blackImgPath!,
+          ]);
+          ff.on("close", (code) => {
+            if (code !== 0) blackImgPath = null;
+            resolve();
+          });
+        });
+      }
+
       clips.sort((a, b) => a.startSec - b.startSec);
       const filled: Clip[] = [];
       let cursor = 0;
 
       for (const clip of clips) {
         if (clip.startSec > cursor + 0.5) {
-          // Gap before this clip — fill with the previous image (or the first
-          // clip's image if we haven't shown anything yet)
           const gapImg =
-            filled.length > 0
+            mode === "smart" && blackImgPath
+              ? blackImgPath
+              : filled.length > 0
               ? filled[filled.length - 1].imgPath
               : clip.imgPath;
           filled.push({
@@ -1520,11 +1551,13 @@ async function runBhagwatRender(
         cursor = clip.endSec;
       }
 
-      // Fill any remaining time after the last clip up to the full video length
       if (cursor < videoDuration - 0.5 && filled.length > 0) {
-        const lastImg = filled[filled.length - 1].imgPath;
+        const tailImg =
+          mode === "smart" && blackImgPath
+            ? blackImgPath
+            : filled[filled.length - 1].imgPath;
         filled.push({
-          imgPath: lastImg,
+          imgPath: tailImg,
           dur: videoDuration - cursor,
           startSec: cursor,
           endSec: videoDuration,
