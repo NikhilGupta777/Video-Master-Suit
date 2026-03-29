@@ -81,12 +81,9 @@ Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` 
 - `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.mjs`)
 - Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
 
-**Important setup**: Python 3 and yt-dlp must be installed for YouTube routes to work:
-```
-nix-env -iA nixpkgs.python310
-python3 -m ensurepip
-python3 -m pip install yt-dlp
-```
+**Important setup**: Python 3 and yt-dlp are managed via `uv` (see `pyproject.toml`). Run `uv sync` from the workspace root to install deps into `.pythonlibs`. The `pnpm install` postinstall hook does this automatically.
+
+**Production deployment**: The API server artifact.toml build step runs `pnpm install --frozen-lockfile` (which triggers `uv sync` via postinstall) before bundling with esbuild. Environment vars `UV_PROJECT_ENVIRONMENT=/home/runner/workspace/.pythonlibs`, `UV_PYTHON_PREFERENCE=only-system`, and `UV_PYTHON_DOWNLOADS=never` ensure Python deps go to the correct location. The PYTHONPATH in spawn calls (`youtube.ts`, `bhagwat.ts`) is set dynamically from `process.env.REPL_HOME ?? process.cwd()` so it works in both dev and production.
 
 ### `lib/db` (`@workspace/db`)
 

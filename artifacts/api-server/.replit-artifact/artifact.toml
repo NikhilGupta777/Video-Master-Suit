@@ -15,10 +15,13 @@ run = "pnpm --filter @workspace/api-server run dev"
 [services.production]
 
 [services.production.build]
-args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
+args = ["sh", "-c", "pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build"]
 
 [services.production.build.env]
 NODE_ENV = "production"
+UV_PROJECT_ENVIRONMENT = "/home/runner/workspace/.pythonlibs"
+UV_PYTHON_PREFERENCE = "only-system"
+UV_PYTHON_DOWNLOADS = "never"
 
 [services.production.run]
 # we don't run through pnpm to make startup faster in production

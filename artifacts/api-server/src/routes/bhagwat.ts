@@ -20,10 +20,13 @@ import { get as httpGet } from "http";
 
 const router: Router = Router();
 
+// Make yt-dlp (installed via uv sync) visible to the system Python.
+// process.cwd() is always the workspace root (both dev and production).
+const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
 const PYTHON_ENV = {
   ...process.env,
-  PATH: process.env.PATH ?? "/usr/bin:/bin",
-  PYTHONPATH: "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages",
+  PATH: `${_workspaceRoot}/.pythonlibs/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
+  PYTHONPATH: `${_workspaceRoot}/.pythonlibs/lib/python3.11/site-packages`,
 };
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
