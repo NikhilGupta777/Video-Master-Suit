@@ -1139,7 +1139,7 @@ WHAT YOU ARE EDITING:
 - Your job: plan a sequence of images that visually brings the narration to life.
 
 HOW TO THINK ABOUT EACH SEGMENT:
-1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of 8–12 seconds each. CRITICAL RULE: NEVER make a single katha segment longer than 12 seconds. If the speaker narrates a section for 30 seconds, that must be 3 SEPARATE segments (~10s each) with 3 DIFFERENT image prompts, each showing a distinct moment of the story progressing. More segments = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, 16th century devotional painting style". Set imageChangeEvery to match the segment duration (8–12).
+1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of duration about 7–15 seconds each or if it varies then adjust accordingly dont rely on limitations provided. CRITICAL RULE: you are the best visual editor and capable to adjust segments durations best way but not too long that a segment covered up 2 by mistake so strictly work attentively. If the speaker narrates a section for 30 seconds, that can be 2-5 SEPARATE segments (best precise duration according to what speaker saying) with n DIFFERENT image prompts, each showing a distinct moment of the story progressing. More segments (according to what speaker saying and what would fit best) = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — eg: not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, 16th century devotional painting style". Set imageChangeEvery to match the segment duration (8–12).
 
 2. BHAJAN / KIRTAN (when speaker sings a devotional song or plays music): Detect this by repeated devotional phrases, "Ram Hare Krishn Hare", "Madhab Madhab", "Jai Shri Ram", "Govind Bolo", song lyrics, musical patterns. For bhajans: use calm meditative devotional imagery — NOT the story scenes, but peaceful deity imagery (eg Radha krishna, Sita Ram or which fits the best to the bhajan,. etc.). Change images every 25–40 seconds (bhajans have a slow, meditative rhythm). Mark isBhajan: true.
 
@@ -1162,7 +1162,7 @@ IMAGE PROMPT RULES:
 ${
   mode === "full"
     ? `FULL COVERAGE MODE: Every second of the video must be covered. No gaps allowed. Start at exactly 0 and end at exactly ${videoDuration}s. All segments must be contiguous with no spaces between them.`
-    : `SMART PLACEMENT MODE: Do NOT cover the whole video. Select only the most visually impactful SEGMENTS throughout the video duration. Leave significant gaps — silence between images is fine and expected. Pick moments where a compelling image genuinely adds value: climactic story revelations, bhajans, key leela moments, emotional peaks, shloka recitations, and auspicious transitions. Skip repetitive narration, long explanations, Q&A sections, or sections where images add little value. Each selected segment should be a specific, clearly defined story beat with a vivid image opportunity. Gaps between segments can be 30 seconds to several minutes — that is correct and intentional.`
+    : `SMART PLACEMENT MODE: Do NOT cover the whole video. Select only the most visually impactful SEGMENTS throughout the video duration. Leave significant gaps — silence between images is fine and expected. Pick moments where a compelling image genuinely adds value: climactic story revelations, bhajans, key leela moments, bhavishya malika reference, world war reference, emotional peaks, shloka recitations, and auspicious transitions. Skip repetitive narration or sections where images add little value. Each selected segment should be a specific, clearly defined story beat with a vivid image opportunity. Gaps between segments can be 15-30 seconds to several minutes — that is correct and intentional adjust accordingly.`
 }
 
 RESPOND with ONLY a valid JSON array, no markdown fences:
@@ -1967,7 +1967,7 @@ async function runBhagwatAnalysisFromFile(
 Your task: Listen to this audio (via transcript) exactly like an expert editor sitting at a timeline, and decide the best image to place at every moment. You must think like an editor: "what image best represents what the speaker is saying RIGHT NOW and from what time to which?"
 
 HOW TO THINK ABOUT EACH SEGMENT:
-1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of 8–12 seconds each. CRITICAL RULE: NEVER make a single katha segment longer than 12 seconds. More segments = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, traditional devotional painting style". Set imageChangeEvery to match the segment duration (8–12).
+1. STORY NARRATION (katha/leela): Break into SHORT, specific story beats of duration about 7–15 seconds each or if it varies then adjust accordingly dont rely on limitations provided. CRITICAL RULE: you are the best visual editor and capable to adjust segments durations best way but not too long that a segment covered up 2 by mistake so strictly work attentively. More segments = more visual variety = better video. Each segment gets ONE unique image prompt. Be specific — not "Lord Krishna" but "Lord Krishna as a young boy stealing butter from the pot, mother Yashoda watching, cozy village home in Vrindavan, traditional devotional painting style". Set imageChangeEvery to match the best segment duration.
 
 2. BHAJAN / KIRTAN: Detect by repeated devotional phrases, song lyrics, musical patterns. For bhajans: calm meditative devotional imagery — peaceful deity imagery. Change images every 25–40 seconds. Mark isBhajan: true.
 
@@ -2008,7 +2008,7 @@ ${transcriptBlock}
 ${
   mode === "full"
     ? `Plan the COMPLETE image timeline covering every second from 0 to ${videoDuration}s with no gaps.`
-    : `Select only the BEST moments for image placement ON THE VIDEO  . Leave large gaps between segments.`
+    : `Select only the BEST moments for image placement ON THE VIDEO ALL BEST KEY AREAS. Leave some gaps between segments and you can think and edit best way as you want as a senior video editor.`
 }`;
 
     const result = await model.generateContent(userContent);
