@@ -1162,7 +1162,12 @@ IMAGE PROMPT RULES:
 ${
   mode === "full"
     ? `FULL COVERAGE MODE: Every second of the video must be covered. No gaps allowed. Start at exactly 0 and end at exactly ${videoDuration}s. All segments must be contiguous with no spaces between them.`
-    : `SMART PLACEMENT MODE: Do NOT cover the whole video. Select only the most visually impactful SEGMENTS throughout the video duration. Leave significant gaps — silence between images is fine and expected. Pick moments where a compelling image genuinely adds value: climactic story revelations, bhajans, key leela moments, bhavishya malika reference, world war reference, emotional peaks, shloka recitations, and auspicious transitions. Skip repetitive narration or sections where images add little value. Each selected segment should be a specific, clearly defined story beat with a vivid image opportunity. Gaps between segments can be 15-30 seconds to several minutes — that is correct and intentional adjust accordingly.`
+    : `SMART PLACEMENT MODE:
+STEP 1 — READ THE FULL TRANSCRIPT FIRST: Before selecting ANY segments, you MUST read the ENTIRE transcript from the very first timestamp to the very last. Do NOT skip the opening section. The first 30–60 seconds of the video are especially important and often contain the most powerful opening moments (introductory katha, mangalacharan, opening shloka, invocation) that deserve images. Read every line.
+
+STEP 2 — SELECT THE BEST MOMENTS throughout the ENTIRE video duration (beginning, middle, AND end). Pick moments where a compelling image genuinely adds value: climactic story revelations, bhajans, key leela moments, bhavishya malika references, emotional peaks, shloka recitations, katha introductions, and auspicious transitions. Skip only repetitive narration where images add little value.
+
+Leave significant gaps between selected segments — silence between images is fine and expected. Gaps of 15–30 seconds to several minutes are correct and intentional. Each selected segment must be a specific, clearly defined story beat with a vivid image opportunity. You must select moments from the FULL video duration — do not only pick from the middle or end.`
 }
 
 RESPOND with ONLY a valid JSON array, no markdown fences:
@@ -1190,7 +1195,7 @@ ${transcriptBlock}
 ${
   mode === "full"
     ? `Plan the COMPLETE image timeline for this clip covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
-    : `Select only the BEST moments for image placement — do not cover the whole clip. Choose the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
+    : `IMPORTANT: First, read the ENTIRE transcript above from the first line to the last. Then select the BEST image moments spread across the FULL video duration — including the OPENING section (first 30–60 seconds), the middle, and the closing. Do not skip the opening. Write vivid, specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
 }`;
 
     const result = await model.generateContent(userContent);
@@ -1332,6 +1337,7 @@ async function runBhagwatRender(
   clipStartSec?: number,
   clipEndSec?: number,
   localAudioPath?: string,
+  mode: "full" | "smart" = "full",
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
@@ -1572,85 +1578,114 @@ async function runBhagwatRender(
 
     emit("progress", { percent: 65, message: "Rendering video with FFmpeg…" });
 
-    // ── 4. FFmpeg render with xfade crossfade transitions ─────────────────────
-    // Derive totalDuration from the clips array (which now covers the full
-    // video after gap filling) so FFmpeg progress tracking is accurate.
-    const totalDuration = clips.reduce((s, c) => s + c.dur, 0);
+    // ── 4. FFmpeg render ───────────────────────────────────────────────────────
+    const totalDuration = isVideoOverlayMode
+      ? videoDuration || clips.reduce((s, c) => s + c.dur, 0)
+      : clips.reduce((s, c) => s + c.dur, 0);
     job.filename = `bhagwat_${tmpId.slice(0, 6)}.mp4`;
-
-    // Clamp fade so it never exceeds 80% of the shortest clip
-    const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
-    // Clamp first-image fade-in so it never exceeds 40% of the first clip's duration
-    // (prevents fade-in from fighting the first xfade transition on short clips)
-    const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
 
     const SCALE =
       "scale=1920:1080:force_original_aspect_ratio=decrease," +
       "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p";
 
-    // Build FFmpeg args and filter_complex
     const ffArgs: string[] = [];
 
-    if (clips.length === 1) {
-      // Single clip — no xfade, just 3s fade-in from black
+    if (isVideoOverlayMode) {
+      // ── Video overlay mode: original video as base, AI images overlaid ──────
+      // Seek to clip start if needed (timestamps in clips are already relative to clip start)
+      if (clipStartSec !== undefined && clipStartSec > 0) {
+        ffArgs.push("-ss", String(clipStartSec));
+      }
+      ffArgs.push("-i", audioFile); // audioFile is the full video in this mode
+
+      // Each unique overlay clip as a looped image input (available for full duration)
+      const imgLoopDur = (totalDuration > 0 ? totalDuration : 3600) + 5;
+      for (const clip of clips) {
+        ffArgs.push("-loop", "1", "-t", imgLoopDur.toFixed(3), "-i", clip.imgPath);
+      }
+
+      const filterParts: string[] = [];
+      filterParts.push(`[0:v]${SCALE}[base]`);
+      for (let i = 0; i < clips.length; i++) {
+        filterParts.push(`[${i + 1}:v]${SCALE}[ov${i}]`);
+      }
+
+      if (clips.length === 0) {
+        // No overlays — just transcode the video directly
+        filterParts.push("[base]copy[vout]");
+      } else {
+        let prevLabel = "base";
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
+          const outLabel = i === clips.length - 1 ? "vout" : `chain${i}`;
+          filterParts.push(
+            `[${prevLabel}][ov${i}]overlay=enable='between(t,${clip.startSec.toFixed(3)},${clip.endSec.toFixed(3)})'[${outLabel}]`,
+          );
+          prevLabel = outLabel;
+        }
+      }
+
       ffArgs.push(
-        "-loop",
-        "1",
-        "-t",
-        clips[0].dur.toFixed(3),
-        "-i",
-        clips[0].imgPath,
+        "-filter_complex",
+        filterParts.join(";"),
+        "-map",
+        "[vout]",
+        "-map",
+        "0:a",
+      );
+
+      if (clipStartSec !== undefined && clipEndSec !== undefined) {
+        ffArgs.push("-t", String(clipEndSec - clipStartSec));
+      }
+
+      ffArgs.push(
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-y",
+        outputPath,
+      );
+    } else if (clips.length === 1) {
+      // ── Slideshow: single image — no xfade, just fade-in from black ──────────
+      const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
+      ffArgs.push(
+        "-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath,
       );
       ffArgs.push("-i", audioFile);
       ffArgs.push(
-        "-vf",
-        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        "-vf", `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "192k",
         "-shortest",
         "-y",
         outputPath,
       );
     } else {
-      // Multiple clips — chain xfade between each consecutive pair
-      // Input 0: natural duration; inputs 1..N-1: duration + FADE_DUR (overlap padding)
+      // ── Slideshow: multiple images — chain xfade between consecutive pairs ───
+      const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
+      const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
+
       ffArgs.push(
-        "-loop",
-        "1",
-        "-t",
-        clips[0].dur.toFixed(3),
-        "-i",
-        clips[0].imgPath,
+        "-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath,
       );
       for (let i = 1; i < clips.length; i++) {
         ffArgs.push(
-          "-loop",
-          "1",
-          "-t",
-          (clips[i].dur + FADE_DUR).toFixed(3),
-          "-i",
-          clips[i].imgPath,
+          "-loop", "1", "-t", (clips[i].dur + FADE_DUR).toFixed(3),
+          "-i", clips[i].imgPath,
         );
       }
       ffArgs.push("-i", audioFile);
 
-      // Build filter_complex:
-      // 1. Scale each input; first image also gets 3s fade-in from black
-      // 2. Chain fadeblack xfade between all clips
       const filterParts: string[] = [];
-
       filterParts.push(`[0]${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}[v0]`);
       for (let i = 1; i < clips.length; i++) {
         filterParts.push(`[${i}]${SCALE}[v${i}]`);
@@ -1670,26 +1705,16 @@ async function runBhagwatRender(
 
       const audioInputIdx = clips.length;
       ffArgs.push(
-        "-filter_complex",
-        filterParts.join(";"),
-        "-map",
-        "[vout]",
-        "-map",
-        `${audioInputIdx}:a`,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        "-filter_complex", filterParts.join(";"),
+        "-map", "[vout]",
+        "-map", `${audioInputIdx}:a`,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "192k",
         "-shortest",
         "-y",
         outputPath,
