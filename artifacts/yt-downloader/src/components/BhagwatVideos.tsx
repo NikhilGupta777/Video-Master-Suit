@@ -4,7 +4,7 @@ import {
   Lock, Unlock, Film, Loader2, CheckCircle2, AlertCircle,
   Download, Wand2, Bot, FileText, Wifi, Eye, EyeOff, Sparkles, ImageIcon,
   Pencil, X, Lightbulb, ChevronDown, ChevronUp, Clock, Check, Scissors,
-  Upload, Music, Youtube, Headphones, Trash2,
+  Upload, Music, Youtube, Headphones, Trash2, Square, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -526,6 +526,7 @@ function BhagwatEditor({
   const [uploadError, setUploadError] = useState("");
 
   const [mode, setMode] = useState<"full" | "smart">("full");
+  const [autonomousMode, setAutonomousMode] = useState(true);
   const [timeline, setTimeline] = useState<TimelineSegment[] | null>(null);
   const [videoTitle, setVideoTitle] = useState("");
   const [videoDuration, setVideoDuration] = useState(0);
@@ -653,14 +654,15 @@ function BhagwatEditor({
     hasAutoReviewedRef.current = false;
   };
 
-  // Auto-trigger review as soon as analysis completes (but do NOT auto-render)
+  // In autonomous mode: auto-trigger review as soon as analysis completes.
+  // In manual mode: skip auto-review so user can inspect the timeline first.
   useEffect(() => {
-    if (phase === "analyzed" && timeline && !hasAutoReviewedRef.current) {
+    if (autonomousMode && phase === "analyzed" && timeline && !hasAutoReviewedRef.current) {
       hasAutoReviewedRef.current = true;
       handleReview();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, timeline]);
+  }, [phase, timeline, autonomousMode]);
 
   useEffect(() => {
     if (phase === "done" && downloadUrl && downloadFilename) {
@@ -802,8 +804,11 @@ function BhagwatEditor({
         setSuggestions([]);
         setReviewing(false);
         es.close();
-        // Auto-render immediately with the fully improved + enriched timeline
-        handleRender(merged);
+        // In autonomous mode: auto-render immediately with the improved timeline.
+        // In manual mode: stay on the review screen so user can inspect and render manually.
+        if (autonomousMode) {
+          handleRender(merged);
+        }
       });
       es.addEventListener("jobError", e => {
         const d = JSON.parse((e as MessageEvent).data);
@@ -816,6 +821,16 @@ function BhagwatEditor({
       toast({ title: "Review failed", description: err.message, variant: "destructive" });
       setReviewing(false);
     }
+  };
+
+  const handleStop = () => {
+    esRef.current?.close();
+    esRef.current = null;
+    setPhase("idle");
+    setReviewing(false);
+    setRenderPercent(0);
+    setRenderMessage("");
+    toast({ title: "Stopped", description: "Processing stopped. You can start again." });
   };
 
   const handleRender = async (timelineOverride?: TimelineSegment[]) => {
@@ -831,12 +846,12 @@ function BhagwatEditor({
         ? fetch(`${BASE}/api/bhagwat/render`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url, timeline: tl, videoDuration, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
+            body: JSON.stringify({ url, timeline: tl, videoDuration, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
           })
         : fetch(`${BASE}/api/bhagwat/render-audio`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration }),
+            body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration, mode }),
           }));
       const { jobId } = await renderRes.json();
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
@@ -987,25 +1002,67 @@ function BhagwatEditor({
           ))}
         </div>
 
-        <Button
-          onClick={handleAnalyze}
-          disabled={
-            phase === "analyzing" || phase === "rendering" || reviewing ||
-            (sourceMode === "upload" && !uploadedFile) ||
-            uploading
-          }
-          className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30"
-        >
-          {phase === "analyzing" ? (
-            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</>
-          ) : reviewing ? (
-            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> AI reviewing plan…</>
-          ) : uploading ? (
-            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Uploading…</>
-          ) : (
-            <><Bot className="w-4 h-4 mr-2" /> Analyze & Generate Timeline</>
+        {/* Autonomous mode toggle */}
+        <button
+          onClick={() => setAutonomousMode(p => !p)}
+          className={cn(
+            "w-full flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all",
+            autonomousMode
+              ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
+              : "border-white/10 text-white/50 hover:border-white/20 hover:text-white/70"
           )}
-        </Button>
+        >
+          <div className={cn(
+            "w-9 h-5 rounded-full flex items-center transition-all shrink-0",
+            autonomousMode ? "bg-violet-500 justify-end" : "bg-white/15 justify-start"
+          )}>
+            <div className="w-4 h-4 rounded-full bg-white mx-0.5 shadow" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5" />
+              Autonomous Mode
+            </div>
+            <div className="text-xs opacity-60 mt-0.5">
+              {autonomousMode
+                ? "Auto: analyse → AI review → render (one click)"
+                : "Manual: review & edit timeline before rendering"}
+            </div>
+          </div>
+        </button>
+
+        <div className="flex gap-2">
+          <Button
+            onClick={handleAnalyze}
+            disabled={
+              phase === "analyzing" || phase === "rendering" || reviewing ||
+              (sourceMode === "upload" && !uploadedFile) ||
+              uploading
+            }
+            className="flex-1 bg-amber-600 hover:bg-amber-500 border-amber-500/30"
+          >
+            {phase === "analyzing" ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</>
+            ) : reviewing ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> AI reviewing…</>
+            ) : uploading ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Uploading…</>
+            ) : (
+              <><Bot className="w-4 h-4 mr-2" /> Analyze & Generate Timeline</>
+            )}
+          </Button>
+
+          {/* Stop button — visible while actively processing */}
+          {(phase === "analyzing" || phase === "rendering" || reviewing) && (
+            <Button
+              onClick={handleStop}
+              className="bg-red-600 hover:bg-red-500 border-red-500/30 text-white px-4 shrink-0"
+              title="Stop processing"
+            >
+              <Square className="w-4 h-4 fill-current" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Analysis Steps */}
@@ -1230,6 +1287,13 @@ function BhagwatEditor({
                 <p className="text-xs text-white/40 mt-0.5">{renderMessage}</p>
               </div>
               <span className="text-amber-400 font-bold text-sm tabular-nums">{renderPercent}%</span>
+              <button
+                onClick={handleStop}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-red-600/80 hover:bg-red-500 text-white rounded-lg transition-colors shrink-0"
+                title="Stop rendering"
+              >
+                <Square className="w-3 h-3 fill-current" /> Stop
+              </button>
             </div>
             <div className="h-2 rounded-full bg-white/10 overflow-hidden">
               <motion.div
