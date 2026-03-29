@@ -389,9 +389,9 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
   const esRef = useRef<EventSource | null>(null);
 
   const [reviewing, setReviewing] = useState(false);
-  const [reviewText, setReviewText] = useState("");
+  const [autoImprovedCount, setAutoImprovedCount] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const reviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const hasAutoReviewedRef = useRef(false);
 
   const [history, setHistory] = useState<HistoryEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]"); } catch { return []; }
@@ -405,11 +405,14 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
 
+  // Auto-trigger review as soon as analysis completes
   useEffect(() => {
-    if (reviewScrollRef.current) {
-      reviewScrollRef.current.scrollTop = reviewScrollRef.current.scrollHeight;
+    if (phase === "analyzed" && timeline && !hasAutoReviewedRef.current) {
+      hasAutoReviewedRef.current = true;
+      handleReview();
     }
-  }, [reviewText]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, timeline]);
 
   useEffect(() => {
     if (phase === "done" && downloadUrl && downloadFilename) {
@@ -437,8 +440,9 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
     setDownloadUrl(null);
     setErrorMsg("");
     setSuggestions([]);
-    setReviewText("");
+    setAutoImprovedCount(null);
     setReviewing(false);
+    hasAutoReviewedRef.current = false;
     setSteps({
       metadata:   { status: "idle", message: "" },
       transcript: { status: "idle", message: "" },
