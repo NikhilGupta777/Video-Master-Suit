@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
-pnpm install --frozen-lockfile
-# Only push DB schema if DATABASE_URL is configured (skips gracefully in fresh clones)
+pnpm install
 if [ -n "$DATABASE_URL" ]; then
-  pnpm --filter db push || true
+  pnpm --filter @workspace/db run push || true
 fi
