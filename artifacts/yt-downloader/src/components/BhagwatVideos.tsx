@@ -112,12 +112,13 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 
 // ── Editable Timeline Preview ──────────────────────────────────────────────────
 function EditableTimelinePreview({
-  timeline, suggestions, onEditPrompt, onAcceptSuggestion,
+  timeline, suggestions, onEditPrompt, onAcceptSuggestion, onDismissSuggestion,
 }: {
   timeline: TimelineSegment[];
   suggestions: Suggestion[];
   onEditPrompt: (idx: number, newPrompt: string) => void;
   onAcceptSuggestion: (s: Suggestion) => void;
+  onDismissSuggestion: (segIdx: number) => void;
 }) {
   const totalDur = timeline.reduce((s, seg) => s + (seg.endSec - seg.startSec), 0);
   const bhajans = timeline.filter(s => s.isBhajan).length;
@@ -265,7 +266,7 @@ function EditableTimelinePreview({
                           <Check className="w-3 h-3" /> Accept
                         </button>
                         <button
-                          onClick={() => setExpandedSugIdx(null)}
+                          onClick={() => { onDismissSuggestion(suggestion.segIdx); setExpandedSugIdx(null); }}
                           className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
                         >
                           <X className="w-3 h-3" /> Dismiss
@@ -535,6 +536,15 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
     setSuggestions(prev => prev.filter(x => x.segIdx !== s.segIdx));
   };
 
+  const handleDismissSuggestion = (segIdx: number) => {
+    setSuggestions(prev => prev.filter(x => x.segIdx !== segIdx));
+  };
+
+  const handleAcceptAllSuggestions = () => {
+    suggestions.forEach(s => handleEditPrompt(s.segIdx, s.improvedPrompt));
+    setSuggestions([]);
+  };
+
   const STEP_ICONS: Record<string, any> = { metadata: Wifi, transcript: FileText, ai: Bot };
   const STEP_LABELS: Record<string, string> = { metadata: "Video info", transcript: "Transcript", ai: "AI analysis" };
 
@@ -673,6 +683,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
               suggestions={suggestions}
               onEditPrompt={handleEditPrompt}
               onAcceptSuggestion={handleAcceptSuggestion}
+              onDismissSuggestion={handleDismissSuggestion}
             />
 
             {/* AI Plan Review panel */}
@@ -706,7 +717,7 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
               {(reviewText || reviewing) && (
                 <div
                   ref={reviewScrollRef}
-                  className="border-t border-white/8 max-h-56 overflow-y-auto p-3 bg-black/20"
+                  className="border-t border-white/8 max-h-48 overflow-y-auto p-3 bg-black/20"
                 >
                   <p className="text-xs text-white/50 leading-relaxed whitespace-pre-wrap font-mono">
                     {reviewText.replace(/SUGGESTIONS_JSON[\s\S]*?END_SUGGESTIONS/g, "").trimEnd()}
@@ -717,7 +728,57 @@ function BhagwatEditor({ BASE }: { BASE: string }) {
                 </div>
               )}
 
-              {!reviewText && !reviewing && (
+              {/* Structured suggestions list — shown after review completes */}
+              {!reviewing && suggestions.length > 0 && (
+                <div className="border-t border-yellow-500/15 p-3 space-y-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-yellow-300/80 font-medium">
+                      {suggestions.length} improvement{suggestions.length !== 1 ? "s" : ""} suggested
+                    </p>
+                    <button
+                      onClick={handleAcceptAllSuggestions}
+                      className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/60 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
+                    >
+                      <Check className="w-3 h-3" /> Accept All
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+                    {suggestions.map((s) => (
+                      <div key={s.segIdx} className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-2.5 space-y-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs text-yellow-400/90 font-semibold">Scene #{s.segIdx + 1}</span>
+                          {timeline[s.segIdx] && (
+                            <span className="text-xs text-white/30 tabular-nums">
+                              {formatSec(timeline[s.segIdx].startSec)} – {formatSec(timeline[s.segIdx].endSec)}
+                            </span>
+                          )}
+                          {timeline[s.segIdx] && (
+                            <span className="text-xs text-white/30 truncate max-w-[140px]">{timeline[s.segIdx].description}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-yellow-300/60 leading-snug">{s.reason}</p>
+                        <p className="text-xs text-white/55 italic leading-snug">{s.improvedPrompt}</p>
+                        <div className="flex gap-1.5 pt-0.5">
+                          <button
+                            onClick={() => handleAcceptSuggestion(s)}
+                            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/70 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
+                          >
+                            <Check className="w-3 h-3" /> Accept
+                          </button>
+                          <button
+                            onClick={() => handleDismissSuggestion(s.segIdx)}
+                            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
+                          >
+                            <X className="w-3 h-3" /> Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!reviewText && !reviewing && suggestions.length === 0 && (
                 <p className="px-3 pb-3 text-xs text-white/25">
                   Let AI review each scene prompt and suggest improvements before you render.
                 </p>
