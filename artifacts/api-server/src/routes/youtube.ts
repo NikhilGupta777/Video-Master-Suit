@@ -313,7 +313,24 @@ function buildFormats(
       .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0] ??
     ytFormats.find((f) => f.acodec !== "none" && f.vcodec === "none");
 
-  for (const fmt of ytFormats) {
+  // Codec preference: prefer H.264 (AVC) > VP9 > AV1 > other
+  // This ensures that when multiple formats exist at the same height,
+  // we pick the most compatible one (H.264 plays on virtually every device).
+  function codecPriority(vcodec: string | null): number {
+    if (!vcodec || vcodec === "none") return 99;
+    if (vcodec.startsWith("avc1") || vcodec.startsWith("avc")) return 0;
+    if (vcodec.startsWith("vp9") || vcodec.startsWith("vp09")) return 1;
+    if (vcodec.startsWith("av01") || vcodec.startsWith("av1")) return 2;
+    return 3;
+  }
+
+  const sortedFormats = [...ytFormats].sort((a, b) => {
+    const heightDiff = (b.height ?? 0) - (a.height ?? 0);
+    if (heightDiff !== 0) return heightDiff;
+    return codecPriority(a.vcodec) - codecPriority(b.vcodec);
+  });
+
+  for (const fmt of sortedFormats) {
     const hasVideo = fmt.vcodec !== "none" && !!fmt.vcodec;
     const hasAudio = fmt.acodec !== "none" && !!fmt.acodec;
     const height: number | null = fmt.height ?? null;
@@ -1632,7 +1649,7 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
     "--newline",
     "--progress",
     "-f",
-    "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
     "--merge-output-format",
     "mp4",
     "--download-sections",
