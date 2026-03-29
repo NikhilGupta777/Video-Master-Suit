@@ -650,14 +650,6 @@ function BhagwatEditor({
           Create Devotional Image Video
         </h3>
 
-        <input
-          type="text"
-          value={url}
-          onChange={e => setUrl(e.target.value)}
-          placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
-          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-amber-500/50 text-sm"
-        />
-
         <div className="flex gap-2">
           {([
             { v: "full",  label: "Full Coverage", desc: "AI places images throughout the entire video from start to end" },
@@ -1009,6 +1001,26 @@ export function BhagwatVideos() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-5"
     >
+      {/* Shared YouTube URL input — visible on both tabs */}
+      <div className="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3">
+        <Film className="w-4 h-4 text-amber-400 shrink-0" />
+        <input
+          type="text"
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
+          className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
+        />
+        {url && (
+          <button
+            onClick={() => setUrl("")}
+            className="text-white/30 hover:text-white/60 transition-colors shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
       <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1">
         <button
           onClick={() => setTab("editor")}
