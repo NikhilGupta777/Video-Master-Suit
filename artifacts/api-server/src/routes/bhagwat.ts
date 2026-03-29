@@ -734,7 +734,7 @@ Look at the transcript timestamps against the current plan coverage. Identify si
 - Important shlokas, bhajans, or divine descriptions that deserve an image
 - Any section of the transcript where the current plan leaves a notable gap
 
-For each gap, suggest a new segment with precise timing, description, and a vivid image prompt (IF AND ONLY IF YOU THINK IT SHOULD BE AND IS NEEDED).
+For each gap, suggest a new segment with precise timing, description, and a vivid image prompt.
 
 After your analysis, end your response with EXACTLY this JSON block (no extra text after END_SUGGESTIONS):
 
