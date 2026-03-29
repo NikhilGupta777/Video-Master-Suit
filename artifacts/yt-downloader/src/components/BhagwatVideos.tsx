@@ -112,17 +112,43 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 
 // ── Editable Timeline Preview ──────────────────────────────────────────────────
 function EditableTimelinePreview({
-  timeline, suggestions, onEditPrompt, onAcceptSuggestion, onDismissSuggestion,
+  timeline, suggestions, onEditPrompt, onAcceptSuggestion, onDismissSuggestion, videoDuration,
 }: {
   timeline: TimelineSegment[];
   suggestions: Suggestion[];
   onEditPrompt: (idx: number, newPrompt: string) => void;
   onAcceptSuggestion: (s: Suggestion) => void;
   onDismissSuggestion: (segIdx: number) => void;
+  videoDuration: number;
 }) {
   const totalDur = timeline.reduce((s, seg) => s + (seg.endSec - seg.startSec), 0);
+  // barDur: the full video length when we have it, otherwise just the covered duration
+  const barDur = videoDuration > 0 ? videoDuration : totalDur;
+  // hasGaps: true when selected segments don't cover the whole video (Smart mode)
+  const hasGaps = videoDuration > 0 && Math.abs(totalDur - videoDuration) > 2;
   const bhajans = timeline.filter(s => s.isBhajan).length;
   const kathas = timeline.length - bhajans;
+
+  // Build an ordered list of bar items that includes gap elements between segments.
+  // This gives the user an accurate picture of WHERE in the video images appear.
+  type BarItem =
+    | { kind: "seg"; pct: number; seg: TimelineSegment; idx: number }
+    | { kind: "gap"; pct: number };
+  const barItems: BarItem[] = [];
+  {
+    let cursor = 0;
+    for (let i = 0; i < timeline.length; i++) {
+      const seg = timeline[i];
+      if (seg.startSec > cursor + 0.5 && barDur > 0) {
+        barItems.push({ kind: "gap", pct: ((seg.startSec - cursor) / barDur) * 100 });
+      }
+      barItems.push({ kind: "seg", pct: ((seg.endSec - seg.startSec) / barDur) * 100, seg, idx: i });
+      cursor = seg.endSec;
+    }
+    if (cursor < barDur - 0.5 && barDur > 0) {
+      barItems.push({ kind: "gap", pct: ((barDur - cursor) / barDur) * 100 });
+    }
+  }
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [expandedSugIdx, setExpandedSugIdx] = useState<number | null>(null);

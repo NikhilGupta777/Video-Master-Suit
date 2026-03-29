@@ -71,9 +71,8 @@ async function generateImage(
 ): Promise<void> {
   const imageAI = getImageGenClient();
 
-  const sanitizedPrompt = prompt.slice(0, 500);
   const fullPrompt = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for  video content with a spiritual and reverential tone.
-The image should visually represent: ${sanitizedPrompt}
+The image should visually represent: ${prompt}
 
 CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
 - MUST be photorealistic - no abstract, digital, animated, or illustrated styles
@@ -125,7 +124,10 @@ async function generateAllSegmentImages(
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const count = 1;
+    const segDur = seg.endSec - seg.startSec;
+    // Honour imageChangeEvery: generate one image per interval, capped at 6
+    // so a long gap-filler segment doesn't spawn dozens of identical images.
+    const count = Math.min(6, Math.max(1, Math.round(segDur / Math.max(1, seg.imageChangeEvery))));
     for (let j = 0; j < count; j++) {
       tasks.push({
         segIdx: i,
@@ -157,7 +159,7 @@ async function generateAllSegmentImages(
             errMsg,
           );
           // Retry with a simpler fallback prompt
-          const fallback = `${task.prompt}. Devotional Indian painting style.`;
+          const fallback = `${task.prompt}. MUST be photorealistic — no abstract, digital, animated, or illustrated styles`;
           try {
             await generateImage(genAI, fallback, task.path);
             imagePaths[task.segIdx].push(task.path);
@@ -349,6 +351,14 @@ interface AnalysisJob {
 }
 const analysisJobs = new Map<string, AnalysisJob>();
 
+// Clean up completed/failed analysis jobs older than 1 hour (memory leak fix)
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, job] of analysisJobs.entries()) {
+    if (job.createdAt < cutoff) analysisJobs.delete(id);
+  }
+}, 30 * 60 * 1000);
+
 router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
   const { url, mode } = req.body as { url: string; mode?: "smart" | "full" };
   if (!url) {
@@ -408,12 +418,15 @@ interface ReviewJob {
 }
 const reviewJobs = new Map<string, ReviewJob>();
 
-setInterval(() => {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  for (const [id, job] of reviewJobs.entries()) {
-    if (job.createdAt < cutoff) reviewJobs.delete(id);
-  }
-}, 30 * 60 * 1000);
+setInterval(
+  () => {
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    for (const [id, job] of reviewJobs.entries()) {
+      if (job.createdAt < cutoff) reviewJobs.delete(id);
+    }
+  },
+  30 * 60 * 1000,
+);
 
 router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
   const { timeline, videoTitle, videoDuration } = req.body as {
@@ -433,12 +446,21 @@ router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
   };
   reviewJobs.set(jobId, job);
   res.json({ jobId });
-  runBhagwatReview(jobId, job, timeline, videoTitle ?? "", videoDuration ?? 0).catch(() => {});
+  runBhagwatReview(
+    jobId,
+    job,
+    timeline,
+    videoTitle ?? "",
+    videoDuration ?? 0,
+  ).catch(() => {});
 });
 
 router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
   const job = reviewJobs.get(req.params.jobId);
-  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -446,8 +468,14 @@ router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
   const send = (event: string, data: object) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   job.emitter.on("chunk", (d) => send("chunk", d));
-  job.emitter.on("suggestions", (d) => { send("suggestions", d); res.end(); });
-  job.emitter.on("jobError", (d) => { send("jobError", d); res.end(); });
+  job.emitter.on("suggestions", (d) => {
+    send("suggestions", d);
+    res.end();
+  });
+  job.emitter.on("jobError", (d) => {
+    send("jobError", d);
+    res.end();
+  });
   req.on("close", () => job.emitter.removeAllListeners());
 });
 
@@ -503,7 +531,9 @@ Only include segments that genuinely need improvement. If the plan is good, the 
 
     // Parse structured suggestions from the marker block
     let suggestions: any[] = [];
-    const match = fullText.match(/SUGGESTIONS_JSON\s*([\s\S]*?)\s*END_SUGGESTIONS/);
+    const match = fullText.match(
+      /SUGGESTIONS_JSON\s*([\s\S]*?)\s*END_SUGGESTIONS/,
+    );
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
@@ -534,9 +564,10 @@ interface RenderJob {
 const renderJobs = new Map<string, RenderJob>();
 
 router.post("/bhagwat/render", async (req: Request, res: Response) => {
-  const { url, timeline } = req.body as {
+  const { url, timeline, videoDuration } = req.body as {
     url: string;
     timeline: TimelineSegment[];
+    videoDuration?: number;
   };
   if (!url || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "url and timeline are required" });
@@ -550,7 +581,7 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
   };
   renderJobs.set(jobId, job);
   res.json({ jobId });
-  runBhagwatRender(jobId, job, url, timeline).catch(() => {});
+  runBhagwatRender(jobId, job, url, timeline, videoDuration ?? 0).catch(() => {});
 });
 
 router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
@@ -604,7 +635,9 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   if (!job.deleteScheduled) {
     job.deleteScheduled = true;
     setTimeout(() => {
-      try { unlinkSync(job.outputPath!); } catch {}
+      try {
+        unlinkSync(job.outputPath!);
+      } catch {}
       job.outputPath = undefined;
       job.status = "expired";
       setTimeout(() => renderJobs.delete(req.params.jobId), 60_000);
@@ -613,15 +646,22 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
 });
 
 // Sweep render jobs older than 2 hours from memory (safety net)
-setInterval(() => {
-  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-  for (const [id, job] of renderJobs.entries()) {
-    if (job.createdAt < cutoff) {
-      if (job.outputPath) { try { unlinkSync(job.outputPath); } catch {} }
-      renderJobs.delete(id);
+setInterval(
+  () => {
+    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    for (const [id, job] of renderJobs.entries()) {
+      if (job.createdAt < cutoff) {
+        if (job.outputPath) {
+          try {
+            unlinkSync(job.outputPath);
+          } catch {}
+        }
+        renderJobs.delete(id);
+      }
     }
-  }
-}, 30 * 60 * 1000);
+  },
+  30 * 60 * 1000,
+);
 
 // ── runBhagwatAnalysis ────────────────────────────────────────────────────────
 async function runBhagwatAnalysis(
@@ -837,9 +877,10 @@ Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDurat
 ${videoDescription ? `Description: ${videoDescription}` : ""}
 ${transcriptBlock}
 
-${mode === "full"
-  ? `Plan the COMPLETE image timeline for this video covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
-  : `Select only the BEST moments for image placement — do not cover the whole video. Choose 30–55% of the video: the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
+${
+  mode === "full"
+    ? `Plan the COMPLETE image timeline for this video covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
+    : `Select only the BEST moments for image placement — do not cover the whole video. Choose 30–55% of the video: the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
 }`;
 
     const result = await model.generateContent(userContent);
@@ -867,9 +908,16 @@ ${mode === "full"
               startSec: Math.max(0, Math.round(s.startSec)),
               endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
               isBhajan: s.isBhajan === true,
-              imageChangeEvery: s.isBhajan === true
-                ? Math.max(20, Math.min(40, Math.round(s.imageChangeEvery ?? 30)))
-                : Math.max(8, Math.min(12, Math.round(s.imageChangeEvery ?? 10))),
+              imageChangeEvery:
+                s.isBhajan === true
+                  ? Math.max(
+                      20,
+                      Math.min(40, Math.round(s.imageChangeEvery ?? 30)),
+                    )
+                  : Math.max(
+                      8,
+                      Math.min(12, Math.round(s.imageChangeEvery ?? 10)),
+                    ),
               description: (s.description ?? "").slice(0, 150),
               imagePrompt: (s.imagePrompt ?? "").slice(0, 600),
             }),
@@ -902,9 +950,10 @@ ${mode === "full"
       for (let i = 1; i < timeline.length; i++) {
         const prev = filled[filled.length - 1];
         // Clip overlapping segment so it starts where the previous one ended
-        const seg = timeline[i].startSec < prev.endSec
-          ? { ...timeline[i], startSec: prev.endSec }
-          : timeline[i];
+        const seg =
+          timeline[i].startSec < prev.endSec
+            ? { ...timeline[i], startSec: prev.endSec }
+            : timeline[i];
         // Skip degenerate segments produced by clipping
         if (seg.endSec <= seg.startSec + 1) continue;
         if (seg.startSec > prev.endSec) {
@@ -964,12 +1013,12 @@ async function runBhagwatRender(
   job: RenderJob,
   url: string,
   timeline: TimelineSegment[],
+  videoDuration: number = 0,
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
 
   const tmpId = randomUUID();
-  const concatPath = join(BHAGWAT_TMP_DIR, `${tmpId}_concat.txt`);
   const audioPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio`);
   const imgDir = join(BHAGWAT_TMP_DIR, `${tmpId}_imgs`);
   const outputPath = join(BHAGWAT_RENDERED_DIR, `${jobId}.mp4`);
@@ -1003,7 +1052,10 @@ async function runBhagwatRender(
         ]);
       } catch (err) {
         ytdlpError = err instanceof Error ? err.message : String(err);
-        console.error("[bhagwat/render] yt-dlp audio download error:", ytdlpError);
+        console.error(
+          "[bhagwat/render] yt-dlp audio download error:",
+          ytdlpError,
+        );
       }
       const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
         f.startsWith(basename(audioPath)),
@@ -1046,8 +1098,10 @@ async function runBhagwatRender(
     interface Clip {
       imgPath: string;
       dur: number;
+      startSec: number;
+      endSec: number;
     }
-    const clips: Clip[] = [];
+    let clips: Clip[] = [];
 
     for (let i = 0; i < timeline.length; i++) {
       const seg = timeline[i];
@@ -1056,7 +1110,62 @@ async function runBhagwatRender(
       const pool = imagePaths[i].filter((p) => p && existsSync(p));
       if (pool.length === 0) continue;
 
-      clips.push({ imgPath: pool[0], dur: segDur });
+      if (pool.length === 1) {
+        // Single image covers the whole segment
+        clips.push({ imgPath: pool[0], dur: segDur, startSec: seg.startSec, endSec: seg.endSec });
+      } else {
+        // Multiple images — split segment into equal sub-clips (implements imageChangeEvery)
+        const subDur = segDur / pool.length;
+        for (let j = 0; j < pool.length; j++) {
+          clips.push({
+            imgPath: pool[j],
+            dur: subDur,
+            startSec: seg.startSec + j * subDur,
+            endSec: seg.startSec + (j + 1) * subDur,
+          });
+        }
+      }
+    }
+
+    // ── Gap filling — critical for Smart Placement mode ────────────────────────
+    // In smart mode, selected segments cover only 30–55% of the video. Without
+    // gap filling, the image track ends early and -shortest cuts the audio to
+    // match, producing a video that is a fraction of the original length.
+    // We fill every gap with the nearest segment's image so the full audio
+    // track plays through to the end.
+    if (videoDuration > 0 && clips.length > 0) {
+      clips.sort((a, b) => a.startSec - b.startSec);
+      const filled: Clip[] = [];
+      let cursor = 0;
+
+      for (const clip of clips) {
+        if (clip.startSec > cursor + 0.5) {
+          // Gap before this clip — fill with the previous image (or the first
+          // clip's image if we haven't shown anything yet)
+          const gapImg = filled.length > 0 ? filled[filled.length - 1].imgPath : clip.imgPath;
+          filled.push({
+            imgPath: gapImg,
+            dur: clip.startSec - cursor,
+            startSec: cursor,
+            endSec: clip.startSec,
+          });
+        }
+        filled.push(clip);
+        cursor = clip.endSec;
+      }
+
+      // Fill any remaining time after the last clip up to the full video length
+      if (cursor < videoDuration - 0.5 && filled.length > 0) {
+        const lastImg = filled[filled.length - 1].imgPath;
+        filled.push({
+          imgPath: lastImg,
+          dur: videoDuration - cursor,
+          startSec: cursor,
+          endSec: videoDuration,
+        });
+      }
+
+      clips = filled;
     }
 
     if (clips.length === 0)
@@ -1065,10 +1174,9 @@ async function runBhagwatRender(
     emit("progress", { percent: 65, message: "Rendering video with FFmpeg…" });
 
     // ── 4. FFmpeg render with xfade crossfade transitions ─────────────────────
-    const totalDuration = timeline.reduce(
-      (s, seg) => s + (seg.endSec - seg.startSec),
-      0,
-    );
+    // Derive totalDuration from the clips array (which now covers the full
+    // video after gap filling) so FFmpeg progress tracking is accurate.
+    const totalDuration = clips.reduce((s, c) => s + c.dur, 0);
     job.filename = `bhagwat_${tmpId.slice(0, 6)}.mp4`;
 
     // Clamp fade so it never exceeds 80% of the shortest clip
@@ -1084,13 +1192,31 @@ async function runBhagwatRender(
 
     if (clips.length === 1) {
       // Single clip — no xfade, just 3s fade-in from black
-      ffArgs.push("-loop", "1", "-t", clips[0].dur.toFixed(3), "-i", clips[0].imgPath);
+      ffArgs.push(
+        "-loop",
+        "1",
+        "-t",
+        clips[0].dur.toFixed(3),
+        "-i",
+        clips[0].imgPath,
+      );
       ffArgs.push("-i", audioFile);
       ffArgs.push(
-        "-vf", `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest", "-y", outputPath,
+        "-vf",
+        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-y",
+        outputPath,
       );
     } else {
       // Multiple clips — chain xfade between each consecutive pair
@@ -1190,9 +1316,6 @@ async function runBhagwatRender(
 
     // ── 5. Cleanup ────────────────────────────────────────────────────────────
     try {
-      unlinkSync(concatPath);
-    } catch {}
-    try {
       unlinkSync(audioFile);
     } catch {}
     try {
@@ -1216,9 +1339,6 @@ async function runBhagwatRender(
     job.status = "error";
     job.error = message;
     emit("jobError", { message });
-    try {
-      unlinkSync(concatPath);
-    } catch {}
     try {
       for (const f of readdirSync(imgDir))
         try {
