@@ -1280,7 +1280,20 @@ async function runClipAnalysis(
         { videoTitle, videoDuration },
       );
     } catch (e) {
-      step("metadata", "warn", "Could not load full metadata — trying anyway");
+      const ytErr = e instanceof Error ? e.message : String(e);
+      log.warn({ ytErr: ytErr.slice(0, 500), url }, "yt-dlp metadata fetch failed");
+      // If yt-dlp is blocked by YouTube (bot detection / sign-in required), abort
+      // immediately rather than proceeding to Gemini with no data — that would
+      // silently return 0 clips, which is confusing.
+      const isBlocked =
+        /sign.in|bot|blocked|403|not available|This video is not available|This video has been/i.test(ytErr);
+      const errMsg = isBlocked
+        ? "YouTube is blocking server access to this video. Try a video from a different channel, or try again later."
+        : "Could not load video info. Check the URL and try again.";
+      job.status = "error";
+      job.error = errMsg;
+      emit("error", { message: errMsg });
+      return;
     }
 
     // ── Step 2: Transcript ────────────────────────────────────────────────
