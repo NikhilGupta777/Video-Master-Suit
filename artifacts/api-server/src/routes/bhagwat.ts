@@ -818,8 +818,19 @@ async function runBhagwatAnalysis(
         "done",
         `"${videoTitle.slice(0, 55)}${videoTitle.length > 55 ? "…" : ""}" · ${formatTime(videoDuration)}`,
       );
-    } catch {
-      step("metadata", "warn", "Could not load full metadata — continuing…");
+    } catch (metaErr) {
+      const metaMsg = metaErr instanceof Error ? metaErr.message : String(metaErr);
+      console.error("[bhagwat/analyze] yt-dlp metadata failed:", metaMsg);
+      step("metadata", "warn", `Could not load metadata: ${metaMsg.slice(0, 120)}`);
+    }
+
+    // If yt-dlp gave us nothing useful, fail early with a clear error instead of
+    // passing empty context to Gemini and silently producing 0 clips.
+    if (!videoTitle && videoDuration === 0 && !transcript) {
+      throw new Error(
+        "Could not fetch video metadata from YouTube. This is usually caused by bot-detection on cloud IPs. " +
+        "Please try again in a few minutes, or check that the URL is a valid public YouTube video.",
+      );
     }
 
     // ── Step 2: Transcript ────────────────────────────────────────────────────
