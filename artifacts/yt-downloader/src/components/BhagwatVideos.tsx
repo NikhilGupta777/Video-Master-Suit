@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Lock, Unlock, Film, Loader2, CheckCircle2, AlertCircle,
   Download, Wand2, Bot, FileText, Wifi, Eye, EyeOff, Sparkles, ImageIcon,
-  Pencil, X, Lightbulb, ChevronDown, ChevronUp, Clock, Check,
+  Pencil, X, Lightbulb, ChevronDown, ChevronUp, Clock, Check, Scissors,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -372,7 +372,16 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
 }
 
 // ── Main Bhagwat Editor ───────────────────────────────────────────────────────
-function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUrl: (v: string) => void }) {
+function BhagwatEditor({
+  BASE, url, setUrl,
+  clipRange, onClearClip,
+}: {
+  BASE: string;
+  url: string;
+  setUrl: (v: string) => void;
+  clipRange?: { startSec: number; endSec: number; title: string };
+  onClearClip?: () => void;
+}) {
   const [mode, setMode] = useState<"full" | "smart">("full");
   const [timeline, setTimeline] = useState<TimelineSegment[] | null>(null);
   const [videoTitle, setVideoTitle] = useState("");
@@ -456,7 +465,7 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
       const res = await fetch(`${BASE}/api/bhagwat/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, mode }),
+        body: JSON.stringify({ url, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
       });
       const { jobId } = await res.json();
       const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${jobId}`);
@@ -550,7 +559,7 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
       const res = await fetch(`${BASE}/api/bhagwat/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, timeline: tl, videoDuration }),
+        body: JSON.stringify({ url, timeline: tl, videoDuration, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
       });
       const { jobId } = await res.json();
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
@@ -606,6 +615,30 @@ function BhagwatEditor({ BASE, url, setUrl }: { BASE: string; url: string; setUr
 
   return (
     <div className="space-y-4">
+
+      {/* Clip Mode Banner */}
+      {clipRange && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl px-4 py-3"
+        >
+          <Scissors className="w-4 h-4 text-amber-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-amber-200 text-sm font-semibold truncate">Clip Mode: {clipRange.title}</p>
+            <p className="text-amber-400/70 text-xs">{formatSec(clipRange.startSec)} → {formatSec(clipRange.endSec)} · {formatSec(clipRange.endSec - clipRange.startSec)} clip</p>
+          </div>
+          {onClearClip && (
+            <button
+              onClick={onClearClip}
+              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-colors shrink-0"
+              title="Exit clip mode"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </motion.div>
+      )}
 
       {/* Render History */}
       <RenderHistory history={history} onClear={() => saveHistory([])} />
@@ -948,8 +981,23 @@ export function BhagwatVideos() {
   const [tab, setTab] = useState<"clips" | "editor">("editor");
   // Lifted up so the Find Clips tab pre-fills the same URL the editor already has
   const [url, setUrl] = useState("");
+  // Clip range set when user clicks "Edit with AI" on a found clip
+  const [clipRange, setClipRange] = useState<{ startSec: number; endSec: number; title: string } | undefined>(undefined);
+  // Key to force-reset BhagwatEditor when a new clip is selected
+  const [editorKey, setEditorKey] = useState(0);
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  const handleEditClip = useCallback((clip: { startSec: number; endSec: number; title: string }) => {
+    setClipRange({ startSec: clip.startSec, endSec: clip.endSec, title: clip.title });
+    setEditorKey(k => k + 1); // reset editor state for new clip
+    setTab("editor");
+  }, []);
+
+  const handleClearClip = useCallback(() => {
+    setClipRange(undefined);
+    setEditorKey(k => k + 1);
+  }, []);
 
   if (!unlocked) {
     return <PasswordGate onUnlock={() => setUnlocked(true)} />;
@@ -973,6 +1021,7 @@ export function BhagwatVideos() {
         >
           <Sparkles className="w-4 h-4" />
           AI Image Video
+          {clipRange && <Badge className="ml-1 h-4 px-1.5 text-[10px] bg-amber-500/30 text-amber-200 border-0">Clip</Badge>}
         </button>
         <button
           onClick={() => setTab("clips")}
@@ -989,10 +1038,17 @@ export function BhagwatVideos() {
       </div>
 
       <div className={tab === "editor" ? undefined : "hidden"}>
-        <BhagwatEditor BASE={BASE} url={url} setUrl={setUrl} />
+        <BhagwatEditor
+          key={editorKey}
+          BASE={BASE}
+          url={url}
+          setUrl={setUrl}
+          clipRange={clipRange}
+          onClearClip={handleClearClip}
+        />
       </div>
       <div className={tab === "clips" ? undefined : "hidden"}>
-        <BestClips url={url} />
+        <BestClips url={url} onEditClip={handleEditClip} />
       </div>
     </motion.div>
   );

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
-  AlertTriangle, Wand2, Timer
+  AlertTriangle, Wand2, Timer, Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -56,7 +56,7 @@ const STEP_META: Record<StepName, { label: string; icon: any }> = {
   ai:         { label: "AI analysis",  icon: Bot },
 };
 
-interface Props { url: string; }
+interface Props { url: string; onEditClip?: (clip: BestClip) => void; }
 export interface BestClipsHandle { startAnalyze: () => void; }
 
 function formatDuration(seconds: number): string {
@@ -88,7 +88,7 @@ function formatRemaining(remainingSec: number): string {
   return `~${Math.ceil(remainingSec / 60)}min left`;
 }
 
-export const BestClips = forwardRef(function BestClips({ url }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
+export const BestClips = forwardRef(function BestClips({ url, onEditClip }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [customInstructions, setCustomInstructions] = useState("");
@@ -619,6 +619,17 @@ export const BestClips = forwardRef(function BestClips({ url }: Props, ref: Reac
                                 >
                                   {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                 </button>
+
+                                {onEditClip && (
+                                  <Button
+                                    size="sm"
+                                    variant="glass"
+                                    onClick={() => onEditClip(clip)}
+                                    className="rounded-xl h-8 px-3 text-xs font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                                  >
+                                    <span className="flex items-center gap-1.5"><Pencil className="w-3 h-3" />Edit with AI</span>
+                                  </Button>
+                                )}
 
                                 <Button
                                   size="sm"

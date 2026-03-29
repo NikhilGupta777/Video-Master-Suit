@@ -59,6 +59,10 @@ YouTube video downloader web app (React + Vite). Features:
 - Real-time download progress (percent, speed, ETA) via polling
 - **In-browser video playback**: clicking the thumbnail/play button opens a full video player modal that streams via `/api/youtube/stream`
 - Uses `/api/youtube/*` backend routes
+- **Bhagwat tab** (password-protected: `bhagwatnarrationvideos@clips2026`): AI-powered devotional video editor with two sub-features:
+  - **AI Image Video** (`BhagwatEditor`): Analyzes Bhagwat Katha transcripts with Gemini, generates AI images for each scene, renders a narrated MP4. Supports **Clip Mode** — when a clip is opened from "Find Clips", the editor targets only that time range (transcript filtered, audio trimmed with FFmpeg, AI prompt constrained).
+  - **Find Clips** (`BestClips`): AI finds the best clips by duration. Each clip has an "Edit with AI" button that opens it in the Bhagwat Editor in clip mode, passing `clipStartSec`/`clipEndSec` to both the analyze and render API endpoints.
+- Key files: `src/components/BhagwatVideos.tsx`, `src/components/BestClips.tsx`
 - `previewPath: "/"`
 
 ## Packages

@@ -360,7 +360,12 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
-  const { url, mode } = req.body as { url: string; mode?: "smart" | "full" };
+  const { url, mode, clipStartSec, clipEndSec } = req.body as {
+    url: string;
+    mode?: "smart" | "full";
+    clipStartSec?: number;
+    clipEndSec?: number;
+  };
   if (!url) {
     res.status(400).json({ error: "url is required" });
     return;
@@ -373,7 +378,7 @@ router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
   };
   analysisJobs.set(jobId, job);
   res.json({ jobId });
-  runBhagwatAnalysis(jobId, job, url, mode ?? "full").catch(() => {});
+  runBhagwatAnalysis(jobId, job, url, mode ?? "full", clipStartSec, clipEndSec).catch(() => {});
 });
 
 router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
@@ -564,10 +569,12 @@ interface RenderJob {
 const renderJobs = new Map<string, RenderJob>();
 
 router.post("/bhagwat/render", async (req: Request, res: Response) => {
-  const { url, timeline, videoDuration } = req.body as {
+  const { url, timeline, videoDuration, clipStartSec, clipEndSec } = req.body as {
     url: string;
     timeline: TimelineSegment[];
     videoDuration?: number;
+    clipStartSec?: number;
+    clipEndSec?: number;
   };
   if (!url || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "url and timeline are required" });
@@ -581,7 +588,7 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
   };
   renderJobs.set(jobId, job);
   res.json({ jobId });
-  runBhagwatRender(jobId, job, url, timeline, videoDuration ?? 0).catch(() => {});
+  runBhagwatRender(jobId, job, url, timeline, videoDuration ?? 0, clipStartSec, clipEndSec).catch(() => {});
 });
 
 router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
@@ -669,7 +676,10 @@ async function runBhagwatAnalysis(
   job: AnalysisJob,
   url: string,
   mode: "smart" | "full",
+  clipStartSec?: number,
+  clipEndSec?: number,
 ): Promise<void> {
+  const clipMode = clipStartSec !== undefined && clipEndSec !== undefined;
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   const step = (
     s: string,
@@ -702,6 +712,8 @@ async function runBhagwatAnalysis(
       ]);
       const meta = JSON.parse(metaJson);
       videoDuration = meta.duration ?? 0;
+      // In clip mode, restrict duration to the clip range
+      if (clipMode) videoDuration = clipEndSec! - clipStartSec!;
       videoTitle = meta.title ?? "";
       videoDescription = (meta.description ?? "").slice(0, 800);
       const subs: Record<string, any[]> = meta.subtitles ?? {};
@@ -712,11 +724,22 @@ async function runBhagwatAnalysis(
         meta.language ?? meta.original_language,
       );
       if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
-        transcript = meta.chapters
-          .map(
-            (c: any) =>
-              `[${formatTime(c.start_time)}–${formatTime(c.end_time ?? c.start_time + 60)}] ${c.title}`,
-          )
+        const chapters = clipMode
+          ? meta.chapters.filter((c: any) =>
+              c.start_time < clipEndSec! &&
+              (c.end_time ?? c.start_time + 60) > clipStartSec!
+            )
+          : meta.chapters;
+        transcript = chapters
+          .map((c: any) => {
+            const start = clipMode
+              ? Math.max(0, c.start_time - clipStartSec!)
+              : c.start_time;
+            const end = clipMode
+              ? Math.max(0, (c.end_time ?? c.start_time + 60) - clipStartSec!)
+              : (c.end_time ?? c.start_time + 60);
+            return `[${formatTime(start)}–${formatTime(end)}] ${c.title}`;
+          })
           .join("\n");
       }
       step(
@@ -791,8 +814,18 @@ async function runBhagwatAnalysis(
           if (!deduped.length || deduped[deduped.length - 1].text !== cue.text)
             deduped.push(cue);
         }
-        transcript = cuesToText(deduped);
-        step("transcript", "done", `${deduped.length} transcript lines loaded`);
+        // In clip mode: filter to the requested time range and reindex to relative 0-based time
+        const finalCues = clipMode
+          ? deduped
+              .filter(c => c.startSec < clipEndSec! && c.endSec > clipStartSec!)
+              .map(c => ({
+                ...c,
+                startSec: Math.max(0, c.startSec - clipStartSec!),
+                endSec: Math.max(0, c.endSec - clipStartSec!),
+              }))
+          : deduped;
+        transcript = cuesToText(finalCues);
+        step("transcript", "done", `${finalCues.length} transcript lines loaded`);
       } else {
         step(
           "transcript",
@@ -872,15 +905,19 @@ RESPOND with ONLY a valid JSON array, no markdown fences:
 ]`,
     });
 
+    const clipNote = clipMode
+      ? `\nNOTE: This is a CLIP extracted from ${formatTime(clipStartSec!)} to ${formatTime(clipEndSec!)} of the original video. All timestamps in your response must be RELATIVE to the clip start (i.e., the clip starts at 0s, not at ${clipStartSec}s).`
+      : "";
+
     const userContent = `Video: "${videoTitle}"
-Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
+Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)${clipNote}
 ${videoDescription ? `Description: ${videoDescription}` : ""}
 ${transcriptBlock}
 
 ${
   mode === "full"
-    ? `Plan the COMPLETE image timeline for this video covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
-    : `Select only the BEST moments for image placement — do not cover the whole video. Choose 30–55% of the video: the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
+    ? `Plan the COMPLETE image timeline for this clip covering every second. Write specific image prompts for each story beat. For bhajans, write calm devotional imagery with longer durations. Cover every second from 0 to ${videoDuration}s with no gaps.`
+    : `Select only the BEST moments for image placement — do not cover the whole clip. Choose 30–55% of the clip duration: the most visually compelling story beats, bhajans, and peak moments. Write vivid specific image prompts for each selected moment. Leave large gaps between segments where images are not needed. For bhajans, write calm devotional imagery.`
 }`;
 
     const result = await model.generateContent(userContent);
@@ -1014,6 +1051,8 @@ async function runBhagwatRender(
   url: string,
   timeline: TimelineSegment[],
   videoDuration: number = 0,
+  clipStartSec?: number,
+  clipEndSec?: number,
 ): Promise<void> {
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
@@ -1072,7 +1111,7 @@ async function runBhagwatRender(
       return resolved;
     })();
 
-    const [audioFile, imagePaths] = await Promise.all([
+    let [audioFile, imagePaths] = await Promise.all([
       audioDownloadPromise,
       generateAllSegmentImages(genAI, timeline, imgDir, (done, total, desc) => {
         const pct = 8 + Math.round((done / total) * 52); // 8% → 60%
@@ -1082,6 +1121,30 @@ async function runBhagwatRender(
         });
       }),
     ]);
+
+    // Trim audio to clip range when editing a specific clip
+    if (clipStartSec !== undefined && clipEndSec !== undefined) {
+      const trimmedPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio_trimmed.aac`);
+      await new Promise<void>((resolve, reject) => {
+        const ff = spawn("ffmpeg", [
+          "-ss", String(clipStartSec),
+          "-t", String(clipEndSec - clipStartSec),
+          "-i", audioFile,
+          "-c:a", "copy",
+          "-y",
+          trimmedPath,
+        ]);
+        let stderr = "";
+        ff.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        ff.on("close", (code) =>
+          code === 0
+            ? resolve()
+            : reject(new Error(`Audio trim failed (${code}): ${stderr.slice(-200)}`)),
+        );
+      });
+      try { unlinkSync(audioFile); } catch {}
+      audioFile = trimmedPath;
+    }
 
     const totalGenerated = imagePaths
       .flat()
