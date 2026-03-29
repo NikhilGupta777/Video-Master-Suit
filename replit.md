@@ -1,5 +1,19 @@
 # Workspace
 
+## Fresh Setup (new Replit from GitHub)
+
+When opening this project in a new Replit for the first time:
+
+1. **Dependencies install automatically** — the dev workflow commands run `pnpm install` before starting, which also installs Python/yt-dlp via the `postinstall` hook. No manual steps needed.
+
+2. **Required secrets** — set these in the Replit Secrets panel:
+   - `GEMINI_API_KEY` — required for the Bhagwat AI features (AI image generation, timeline analysis). Without it, AI features will show an error. Get it from [Google AI Studio](https://aistudio.google.com/app/apikey).
+   - `DATABASE_URL` — required only if you use DB features (not used by current routes). Replit provides this automatically when you add a PostgreSQL database integration.
+
+3. **Bhagwat section password** — `bhagwatnarrationvideos@clips2026` (hardcoded server-side, can be changed via `BHAGWAT_PASSWORD` secret)
+
+4. The frontend runs at `/` and the API at `/api`. Both start automatically.
+
 ## Overview
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.

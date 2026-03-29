@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 5173
 
 [services.development]
-run = "pnpm --filter @workspace/yt-downloader run dev"
+run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/yt-downloader run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/yt-downloader", "run", "build" ]

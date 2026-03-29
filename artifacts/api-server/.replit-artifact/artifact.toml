@@ -11,7 +11,7 @@ name = "API Server"
 paths = ["/api"]
 
 [services.development]
-run = "pnpm --filter @workspace/api-server run dev"
+run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run dev"
 
 [services.production]
 
