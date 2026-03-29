@@ -34,6 +34,7 @@ interface HistoryEntry {
 }
 
 const HISTORY_KEY = "bhagwat_render_history";
+const SESSION_KEY = "bhagwat_active_session";
 const MAX_HISTORY = 8;
 const STORAGE_KEY = "bhagwat_unlocked";
 
@@ -541,6 +542,9 @@ function BhagwatEditor({
   const { toast } = useToast();
   const esRef = useRef<EventSource | null>(null);
 
+  const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
+  const [renderJobId, setRenderJobId] = useState<string | null>(null);
+
   const [transcriptText, setTranscriptText] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [reviewText, setReviewText] = useState("");
@@ -578,6 +582,101 @@ function BhagwatEditor({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadedFile?.audioId]);
+
+  // ── Session persistence: save active job to localStorage so refresh reconnects ─
+  useEffect(() => {
+    if (phase === "idle" || phase === "error" || phase === "done") {
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    const session = {
+      phase,
+      mode,
+      savedAt: Date.now(),
+      ...(phase === "analyzing" && analyzeJobId && { analyzeJobId }),
+      ...(phase === "analyzed" && { timeline, videoTitle, videoDuration, transcriptText }),
+      ...(phase === "rendering" && {
+        renderJobId,
+        renderPercent,
+        renderMessage,
+        timeline,
+        videoTitle,
+        videoDuration,
+      }),
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  }, [phase, mode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage]);
+
+  // ── On mount: restore session and reconnect to running jobs ───────────────────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return;
+      const session = JSON.parse(raw);
+      // Don't restore sessions older than 90 minutes
+      if (Date.now() - session.savedAt > 90 * 60 * 1000) {
+        localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+
+      if (session.phase === "analyzed" && Array.isArray(session.timeline)) {
+        setMode(session.mode ?? "full");
+        setTimeline(session.timeline);
+        setVideoTitle(session.videoTitle ?? "");
+        setVideoDuration(session.videoDuration ?? 0);
+        setTranscriptText(session.transcriptText ?? "");
+        hasAutoReviewedRef.current = true; // don't auto-trigger review again
+        setPhase("analyzed");
+        return;
+      }
+
+      if (session.phase === "analyzing" && session.analyzeJobId) {
+        setMode(session.mode ?? "full");
+        setPhase("analyzing");
+        setSteps({ metadata: { status: "idle", message: "" }, transcript: { status: "idle", message: "" }, ai: { status: "idle", message: "" } });
+        setAnalyzeJobId(session.analyzeJobId);
+        const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${session.analyzeJobId}`);
+        esRef.current = es;
+        es.addEventListener("step", e => { const d = JSON.parse(e.data); setStep(d.step, d.status, d.message); });
+        es.addEventListener("done", e => {
+          const d = JSON.parse(e.data);
+          setTimeline(d.timeline); setVideoTitle(d.videoTitle ?? ""); setVideoDuration(d.videoDuration ?? 0); setTranscriptText(d.transcriptText ?? "");
+          setPhase("analyzed"); es.close();
+        });
+        es.addEventListener("jobError", e => {
+          const d = JSON.parse((e as MessageEvent).data);
+          setErrorMsg(d.message ?? "Analysis failed"); setPhase("error"); es.close();
+        });
+        es.onerror = () => { localStorage.removeItem(SESSION_KEY); setPhase("idle"); es.close(); };
+        return;
+      }
+
+      if (session.phase === "rendering" && session.renderJobId) {
+        setMode(session.mode ?? "full");
+        if (Array.isArray(session.timeline)) {
+          setTimeline(session.timeline); setVideoTitle(session.videoTitle ?? ""); setVideoDuration(session.videoDuration ?? 0);
+        }
+        setRenderJobId(session.renderJobId);
+        setRenderPercent(session.renderPercent ?? 0);
+        setRenderMessage("Reconnecting to render job…");
+        setPhase("rendering");
+        const es = new EventSource(`${BASE}/api/bhagwat/render-status/${session.renderJobId}`);
+        esRef.current = es;
+        es.addEventListener("progress", e => { const d = JSON.parse(e.data); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
+        es.addEventListener("done", e => {
+          const d = JSON.parse(e.data);
+          setDownloadUrl(`${BASE}${d.downloadUrl}`); setDownloadFilename(d.filename ?? "bhagwat_video.mp4");
+          setPhase("done"); es.close();
+        });
+        es.addEventListener("jobError", e => {
+          const d = JSON.parse((e as MessageEvent).data);
+          setErrorMsg(d.message ?? "Render failed"); setPhase("error"); es.close();
+        });
+        es.onerror = () => { localStorage.removeItem(SESSION_KEY); setPhase("idle"); es.close(); };
+      }
+    } catch { localStorage.removeItem(SESSION_KEY); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFileSelected = async (file: File) => {
     setUploading(true);
@@ -723,6 +822,7 @@ function BhagwatEditor({
         const data = await res.json();
         jobId = data.jobId;
       }
+      setAnalyzeJobId(jobId);
 
       const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${jobId}`);
       esRef.current = es;
@@ -830,6 +930,9 @@ function BhagwatEditor({
     setReviewing(false);
     setRenderPercent(0);
     setRenderMessage("");
+    setAnalyzeJobId(null);
+    setRenderJobId(null);
+    localStorage.removeItem(SESSION_KEY);
     toast({ title: "Stopped", description: "Processing stopped. You can start again." });
   };
 
@@ -854,6 +957,7 @@ function BhagwatEditor({
             body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration, mode }),
           }));
       const { jobId } = await renderRes.json();
+      setRenderJobId(jobId);
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
       esRef.current = es;
 

@@ -733,7 +733,6 @@ Look at the transcript timestamps against the current plan coverage. Identify si
 - Dramatic moments, reveals, or emotional peaks without visuals
 - Important shlokas, bhajans, or divine descriptions that deserve an image
 - Any section of the transcript where the current plan leaves a notable gap
-- Any section where the current plan has overlapping or redundant segments OR TIMING MISMATCHES WITH THE TRANSCRIPT
 
 For each gap, suggest a new segment with precise timing, description, and a vivid image prompt (IF AND ONLY IF YOU THINK IT SHOULD BE AND IS NEEDED).
 
