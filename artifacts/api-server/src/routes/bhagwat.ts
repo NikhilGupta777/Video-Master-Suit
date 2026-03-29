@@ -108,6 +108,9 @@ export interface TimelineSegment {
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
   process.env.GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
 }
+// Remove GOOGLE_API_KEY so the @google/generative-ai library doesn't log
+// "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" warnings
+delete process.env.GOOGLE_API_KEY;
 
 // ── Gemini image generation ───────────────────────────────────────────────────
 function getImageGenClient(): GoogleGenAI {
