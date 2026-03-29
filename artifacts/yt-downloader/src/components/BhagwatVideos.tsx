@@ -588,7 +588,8 @@ function BhagwatEditor({
         setSuggestions([]);
         setReviewing(false);
         es.close();
-        // User reviews the improved timeline and clicks Render manually — no auto-render.
+        // Auto-render immediately with the AI-improved timeline
+        handleRender(updatedTl);
       });
       es.addEventListener("jobError", e => {
         const d = JSON.parse((e as MessageEvent).data);
@@ -924,16 +925,6 @@ function BhagwatEditor({
                 </p>
               )}
             </div>
-
-            {/* AI review complete notice */}
-            {!reviewing && autoImprovedCount !== null && autoImprovedCount > 0 && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
-                <Lightbulb className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
-                <p className="text-xs text-yellow-300/80">
-                  AI improved <span className="font-semibold">{autoImprovedCount} scene prompt{autoImprovedCount !== 1 ? "s" : ""}</span> — review above and render when ready.
-                </p>
-              </div>
-            )}
 
             {/* Image count info */}
             <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
