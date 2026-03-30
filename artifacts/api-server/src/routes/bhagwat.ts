@@ -224,6 +224,13 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
   return extractImageBytes(response);
 }
 
+function isAnyAIConfigured(): boolean {
+  return (
+    !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
+    !!process.env.GEMINI_API_KEY
+  );
+}
+
 async function generateImage(prompt: string, outputPath: string): Promise<void> {
   // 1. Try Replit integration first
   const replitReady =
@@ -1021,8 +1028,8 @@ async function runBhagwatAnalysis(
   const subDir = join(BHAGWAT_TMP_DIR, `subs_${tmpId}`);
 
   try {
-    if (!process.env.GEMINI_API_KEY)
-      throw new Error("GEMINI_API_KEY is not configured");
+    if (!isAnyAIConfigured())
+      throw new Error("No AI provider configured — add GEMINI_API_KEY in Secrets or enable the Gemini integration");
 
     // ── Step 1: Metadata ──────────────────────────────────────────────────────
     step("metadata", "running", "Fetching video info…");
@@ -1424,8 +1431,8 @@ async function runBhagwatRender(
   mkdirSync(imgDir, { recursive: true });
 
   try {
-    if (!process.env.GEMINI_API_KEY)
-      throw new Error("GEMINI_API_KEY is not configured");
+    if (!isAnyAIConfigured())
+      throw new Error("No AI provider configured — add GEMINI_API_KEY in Secrets or enable the Gemini integration");
 
     // ── 1+2. Download media AND generate images in parallel ───────────────────
     // Smart mode with a YouTube URL → download the full video (audio + video)
@@ -2045,8 +2052,8 @@ async function runBhagwatAnalysisFromFile(
   job.status = "running";
 
   try {
-    if (!process.env.GEMINI_API_KEY)
-      throw new Error("GEMINI_API_KEY is not configured");
+    if (!isAnyAIConfigured())
+      throw new Error("No AI provider configured — add GEMINI_API_KEY in Secrets or enable the Gemini integration");
 
     const audio = uploadedAudios.get(audioId);
     if (!audio)
