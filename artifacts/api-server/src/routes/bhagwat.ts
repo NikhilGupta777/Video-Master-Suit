@@ -1940,22 +1940,10 @@ async function runBhagwatRender(
 
 // ── AssemblyAI transcription ──────────────────────────────────────────────────
 interface AssemblyResult {
-  transcript: string;
+  transcript: string;     // SRT export — 25 chars/line, perfectly timed
   durationSec: number;
   languageCode: string;
-  chapters: Array<{
-    startSec: number;
-    endSec: number;
-    gist: string;
-    headline: string;
-    summary: string;
-  }>;
-  utterances: Array<{
-    speaker: string;
-    startSec: number;
-    endSec: number;
-    text: string;
-  }>;
+  subtitleCount: number;  // number of SRT cue blocks
 }
 
 async function transcribeWithAssemblyAI(
@@ -1970,12 +1958,11 @@ async function transcribeWithAssemblyAI(
   onProgress("Uploading audio to AssemblyAI…");
   const transcript = await client.transcripts.transcribe({
     audio: audioPath,
-    language_detection: true,
-    speaker_labels: true,
-    auto_chapters: true,
-    sentiment_analysis: true,
+    speech_model: "best",   // Universal-2 — highest accuracy
+    punctuate: true,
     format_text: true,
-    speech_model: "best",
+    speaker_labels: false,  // disabled — not needed for image timeline
+    auto_chapters: false,   // disabled — using SRT export instead
   });
 
   if (transcript.status === "error") {
@@ -1984,53 +1971,22 @@ async function transcribeWithAssemblyAI(
     );
   }
 
-  const durationSec = transcript.audio_duration ?? 0; // seconds
+  onProgress("Exporting high-precision subtitles (25 chars/line)…");
+  const durationSec = transcript.audio_duration ?? 0;
 
-  const chapters = (transcript.chapters ?? []).map((c: any) => ({
-    startSec: (c.start ?? 0) / 1000,
-    endSec: (c.end ?? 0) / 1000,
-    gist: c.gist ?? "",
-    headline: c.headline ?? "",
-    summary: c.summary ?? "",
-  }));
+  // Official SRT export — 25 chars per caption = ~5 words per line, YouTube-style
+  const srt = await client.transcripts.exportSubtitlesSrt(transcript.id, {
+    chars_per_caption: 25,
+  });
 
-  const utterances = (transcript.utterances ?? []).map((u: any) => ({
-    speaker: u.speaker ?? "A",
-    startSec: (u.start ?? 0) / 1000,
-    endSec: (u.end ?? 0) / 1000,
-    text: u.text ?? "",
-  }));
-
-  // Build timed transcript — prefer chapters (rich context), fall back to speaker turns
-  let builtTranscript = "";
-  if (chapters.length > 0) {
-    builtTranscript = chapters
-      .map((c) => {
-        const sm = Math.floor(c.startSec / 60),
-          ss = Math.floor(c.startSec % 60);
-        const em = Math.floor(c.endSec / 60),
-          es = Math.floor(c.endSec % 60);
-        return `[${String(sm).padStart(2, "0")}:${String(ss).padStart(2, "0")}–${String(em).padStart(2, "0")}:${String(es).padStart(2, "0")}] ${c.headline}\n${c.summary}`;
-      })
-      .join("\n\n");
-  } else if (utterances.length > 0) {
-    builtTranscript = utterances
-      .map((u) => {
-        const mm = Math.floor(u.startSec / 60),
-          sec = Math.floor(u.startSec % 60);
-        return `[${String(mm).padStart(2, "0")}:${String(sec).padStart(2, "0")}] ${utterances.length > 1 ? `[${u.speaker}] ` : ""}${u.text}`;
-      })
-      .join("\n");
-  } else if (transcript.text) {
-    builtTranscript = transcript.text;
-  }
+  // Count subtitle cue blocks (each block starts with a digit line)
+  const subtitleCount = (srt.match(/^\d+\s*$/gm) ?? []).length;
 
   return {
-    transcript: builtTranscript,
+    transcript: srt,
     durationSec,
     languageCode: transcript.language_code ?? "en",
-    chapters,
-    utterances,
+    subtitleCount,
   };
 }
 
@@ -2107,23 +2063,17 @@ async function runBhagwatAnalysisFromFile(
       audio.durationSec = videoDuration;
       transcript = result.transcript;
 
-      if (result.chapters.length > 0) {
+      if (result.subtitleCount > 0) {
         step(
           "transcript",
           "done",
-          `${result.chapters.length} chapters detected · ${result.languageCode} · ${formatTime(videoDuration)}`,
-        );
-      } else if (result.utterances.length > 0) {
-        step(
-          "transcript",
-          "done",
-          `${result.utterances.length} speaker turns · ${result.languageCode} · ${formatTime(videoDuration)}`,
+          `${result.subtitleCount} subtitle cues · Universal-2 · ${result.languageCode} · ${formatTime(videoDuration)}`,
         );
       } else {
         step(
           "transcript",
           "warn",
-          "Transcript generated but no structural data — AI will work from full text",
+          "Transcript generated but no subtitle cues — AI will work from audio title",
         );
       }
     } catch (err) {
