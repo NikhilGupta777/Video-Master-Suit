@@ -168,33 +168,12 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 delete process.env.GOOGLE_API_KEY;
 
 // ── Gemini image generation ───────────────────────────────────────────────────
-function getImageGenClient(): GoogleGenAI {
-  // Prefer direct API key — supports latest models like gemini-3.1-flash-image-preview
-  if (process.env.GEMINI_API_KEY) {
-    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  }
-  // Fallback to Replit AI integration
-  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
-  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  if (baseUrl && apiKey) {
-    return new GoogleGenAI({
-      apiKey,
-      httpOptions: { apiVersion: "", baseUrl },
-    });
-  }
-  throw new Error(
-    "No Gemini API key configured. Set GEMINI_API_KEY in secrets.",
-  );
-}
+// Priority: Replit AI integration (gemini-2.5-flash-image) → own GEMINI_API_KEY (gemini-3.1-flash-image-preview)
 
-async function generateImage(
-  prompt: string,
-  outputPath: string,
-): Promise<void> {
-  const imageAI = getImageGenClient();
+const IMAGE_PROMPT_PREFIX = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for video content with a spiritual and reverential tone.
+The image should visually represent: `;
 
-  const fullPrompt = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for  video content with a spiritual and reverential tone.
-The image should visually represent: ${prompt}
+const IMAGE_PROMPT_SUFFIX = `
 
 CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
 - MUST be photorealistic - no abstract, digital, animated, or illustrated styles
@@ -204,28 +183,69 @@ CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
 - Consistent with other images in the same video project
 No subtitles, logos, watermarks, UI elements`;
 
-  const response = await imageAI.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
-    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-    config: {
-      responseModalities: [Modality.TEXT, Modality.IMAGE],
-      imageConfig: {
-        aspectRatio: "16:9",
-        imageSize: "2K",
-      } as any,
-    },
-  });
-
+function extractImageBytes(response: any): Buffer {
   const candidate = response.candidates?.[0];
   if (!candidate) throw new Error("Gemini returned no candidate");
-
   const imagePart = candidate.content?.parts?.find(
     (part: any) => part.inlineData?.data,
   );
   if (!imagePart?.inlineData?.data)
     throw new Error("Gemini returned no image data");
+  return Buffer.from(imagePart.inlineData.data, "base64");
+}
 
-  writeFileSync(outputPath, Buffer.from(imagePart.inlineData.data, "base64"));
+async function generateImageViaReplit(prompt: string): Promise<Buffer> {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!baseUrl || !apiKey) throw new Error("Replit AI integration not configured");
+
+  const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
+  const response = await client.models.generateContent({
+    model: "gemini-2.5-flash-image",
+    contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
+    config: { responseModalities: [Modality.IMAGE] },
+  });
+  return extractImageBytes(response);
+}
+
+async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
+  if (!process.env.GEMINI_API_KEY)
+    throw new Error("GEMINI_API_KEY is not configured");
+
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const response = await client.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
+    config: {
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
+      imageConfig: { aspectRatio: "16:9", imageSize: "2K" } as any,
+    },
+  });
+  return extractImageBytes(response);
+}
+
+async function generateImage(prompt: string, outputPath: string): Promise<void> {
+  // 1. Try Replit integration first
+  const replitReady =
+    !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL &&
+    !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+
+  if (replitReady) {
+    try {
+      const bytes = await generateImageViaReplit(prompt);
+      writeFileSync(outputPath, bytes);
+      return;
+    } catch (err) {
+      console.warn(
+        "[bhagwat/img] Replit image gen failed, falling back to own key:",
+        (err as Error).message,
+      );
+    }
+  }
+
+  // 2. Fallback: own GEMINI_API_KEY
+  const bytes = await generateImageViaOwnKey(prompt);
+  writeFileSync(outputPath, bytes);
 }
 
 // Generate images for all segments — 1 per segment
