@@ -17,6 +17,7 @@ import { randomUUID } from "crypto";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 const router: IRouter = Router();
 
@@ -951,7 +952,44 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
 
 // ─── Best Clips Feature (streaming with SSE) ──────────────────────────────
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
+// Replit integration: gemini-3.1-pro-preview  →  own key fallback: gemini-2.5-pro
+function isAiConfigured(): boolean {
+  return (
+    !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
+    !!process.env.GEMINI_API_KEY
+  );
+}
+
+async function clipsGeminiContent(
+  systemInstruction: string,
+  userContent: string,
+): Promise<string> {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+
+  if (baseUrl && apiKey) {
+    try {
+      const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
+      const result = await client.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: [{ role: "user", parts: [{ text: userContent }] }],
+        ...(systemInstruction && { config: { systemInstruction } }),
+      });
+      return (result as any).text ?? "";
+    } catch (err) {
+      console.warn("[clips/text] Replit gemini-3.1-pro-preview failed, falling back to own key:", (err as Error).message);
+    }
+  }
+
+  if (!process.env.GEMINI_API_KEY) throw new Error("No AI provider configured — add GEMINI_API_KEY or enable Replit integration");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-pro",
+    ...(systemInstruction && { systemInstruction }),
+  });
+  const result = await model.generateContent(userContent);
+  return result.response.text();
+}
 
 interface VttCue {
   startSec: number;
@@ -1128,10 +1166,10 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
     res.status(400).json({ error: "URL is required" });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!isAiConfigured()) {
     res.status(503).json({
       error: "AI not configured",
-      details: "GEMINI_API_KEY is not set",
+      details: "Add GEMINI_API_KEY to Secrets or enable Replit Gemini integration",
     });
     return;
   }
@@ -1405,10 +1443,10 @@ async function runClipAnalysis(
       );
     }
 
-    // Fix #3: fail fast if API key is missing
-    if (!process.env.GEMINI_API_KEY) {
+    // Fix #3: fail fast if no AI provider is available
+    if (!isAiConfigured()) {
       job.status = "error";
-      job.error = "GEMINI_API_KEY is not configured on the server";
+      job.error = "No AI provider configured — add GEMINI_API_KEY or enable Replit integration";
       emit("error", { message: job.error });
       return;
     }
@@ -1546,12 +1584,7 @@ ${durationDescList}
 For each clip: read the transcript to find where the idea begins (startSec) and where the speaker's complete thought finishes (endSec). The transcript is your source of truth for cut points — not the duration target. Scan the WHOLE video. No clip count limit.`;
     }
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-pro",
-      systemInstruction: systemPrompt,
-    });
-    const result = await model.generateContent(userContent);
-    const raw = result.response.text().trim();
+    const raw = (await clipsGeminiContent(systemPrompt, userContent)).trim();
 
     // Robust parsing — handles markdown fences, surrounding text, type coercion
     const parsed = extractJsonArray(raw);
