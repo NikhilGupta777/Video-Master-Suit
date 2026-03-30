@@ -1955,14 +1955,21 @@ async function transcribeWithAssemblyAI(
 
   const client = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY });
 
+  // High-Precision Universal-2 configuration
+  const config = {
+    speech_model: "best" as const, // Universal-2 — highest accuracy
+    // word_boost: ["Your", "Custom", "Words"], // Add domain-specific terms here for precision
+    // boost_param: "high" as const,            // Uncomment to strongly boost the above words
+    punctuate: true,
+    format_text: true,
+    speaker_labels: false, // disabled — not needed for image timeline
+    auto_chapters: false,  // disabled — using SRT export instead
+  };
+
   onProgress("Uploading audio to AssemblyAI…");
   const transcript = await client.transcripts.transcribe({
     audio: audioPath,
-    speech_model: "best",   // Universal-2 — highest accuracy
-    punctuate: true,
-    format_text: true,
-    speaker_labels: false,  // disabled — not needed for image timeline
-    auto_chapters: false,   // disabled — using SRT export instead
+    ...config,
   });
 
   if (transcript.status === "error") {
@@ -1974,7 +1981,8 @@ async function transcribeWithAssemblyAI(
   onProgress("Exporting high-precision subtitles (25 chars/line)…");
   const durationSec = transcript.audio_duration ?? 0;
 
-  // Official SRT export — 25 chars per caption = ~5 words per line, YouTube-style
+  // Official SRT subtitle export — 25 chars per caption = ~5 words per line, YouTube-style
+  // Uses the AssemblyAI SDK's subtitle export (equivalent to exportSubtitlesSrt with chars_per_caption: 25)
   const srt = await client.transcripts.subtitles(transcript.id, "srt", 25);
 
   // Count subtitle cue blocks (each block starts with a digit line)
