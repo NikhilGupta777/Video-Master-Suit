@@ -1975,9 +1975,7 @@ async function transcribeWithAssemblyAI(
   const durationSec = transcript.audio_duration ?? 0;
 
   // Official SRT export — 25 chars per caption = ~5 words per line, YouTube-style
-  const srt = await client.transcripts.exportSubtitlesSrt(transcript.id, {
-    chars_per_caption: 25,
-  });
+  const srt = await client.transcripts.subtitles(transcript.id, "srt", 25);
 
   // Count subtitle cue blocks (each block starts with a digit line)
   const subtitleCount = (srt.match(/^\d+\s*$/gm) ?? []).length;
