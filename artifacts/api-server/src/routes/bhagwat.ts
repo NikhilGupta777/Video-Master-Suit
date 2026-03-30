@@ -1672,7 +1672,7 @@ async function runBhagwatRender(
 
     const SCALE =
       "scale=1920:1080:force_original_aspect_ratio=decrease," +
-      "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p";
+      "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,fps=25";
 
     const ffArgs: string[] = [];
 
@@ -1791,24 +1791,22 @@ async function runBhagwatRender(
       const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
 
       ffArgs.push(
-        "-loop",
-        "1",
-        "-t",
-        clips[0].dur.toFixed(3),
-        "-i",
-        clips[0].imgPath,
+        "-thread_queue_size", "512",
+        "-loop", "1",
+        "-r", "25",
+        "-t", clips[0].dur.toFixed(3),
+        "-i", clips[0].imgPath,
       );
       for (let i = 1; i < clips.length; i++) {
         ffArgs.push(
-          "-loop",
-          "1",
-          "-t",
-          (clips[i].dur + FADE_DUR).toFixed(3),
-          "-i",
-          clips[i].imgPath,
+          "-thread_queue_size", "512",
+          "-loop", "1",
+          "-r", "25",
+          "-t", (clips[i].dur + FADE_DUR).toFixed(3),
+          "-i", clips[i].imgPath,
         );
       }
-      ffArgs.push("-i", audioFile);
+      ffArgs.push("-thread_queue_size", "512", "-i", audioFile);
 
       const filterParts: string[] = [];
       filterParts.push(`[0]${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}[v0]`);
