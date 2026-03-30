@@ -248,9 +248,83 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
   writeFileSync(outputPath, bytes);
 }
 
+// ── Gemini text generation (gemini-2.5-pro) ────────────────────────────────────
+// Priority: Replit AI integration first → own GEMINI_API_KEY as fallback
+async function geminiProContent(
+  systemInstruction: string,
+  userContent: string,
+): Promise<string> {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+
+  if (baseUrl && apiKey) {
+    try {
+      const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
+      const result = await client.models.generateContent({
+        model: "gemini-2.5-pro",
+        contents: [{ role: "user", parts: [{ text: userContent }] }],
+        ...(systemInstruction && { config: { systemInstruction } }),
+      });
+      return (result as any).text ?? "";
+    } catch (err) {
+      console.warn("[bhagwat/text] Replit gemini-2.5-pro failed, falling back to own key:", (err as Error).message);
+    }
+  }
+
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-pro",
+    ...(systemInstruction && { systemInstruction }),
+  });
+  const result = await model.generateContent(userContent);
+  return result.response.text();
+}
+
+async function geminiProStream(
+  systemInstruction: string,
+  userContent: string,
+  onChunk: (text: string) => void,
+): Promise<string> {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  let fullText = "";
+
+  if (baseUrl && apiKey) {
+    try {
+      const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
+      const stream = client.models.generateContentStream({
+        model: "gemini-2.5-pro",
+        contents: [{ role: "user", parts: [{ text: userContent }] }],
+        ...(systemInstruction && { config: { systemInstruction } }),
+      });
+      for await (const chunk of await stream) {
+        const text: string = (chunk as any).text ?? "";
+        if (text) { fullText += text; onChunk(text); }
+      }
+      return fullText;
+    } catch (err) {
+      console.warn("[bhagwat/text] Replit gemini-2.5-pro stream failed, falling back to own key:", (err as Error).message);
+      fullText = "";
+    }
+  }
+
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-pro",
+    ...(systemInstruction && { systemInstruction }),
+  });
+  const result = await model.generateContentStream(userContent);
+  for await (const chunk of result.stream) {
+    const text = chunk.text();
+    if (text) { fullText += text; onChunk(text); }
+  }
+  return fullText;
+}
+
 // Generate images for all segments — 1 per segment
 async function generateAllSegmentImages(
-  genAI: GoogleGenerativeAI,
   segments: TimelineSegment[],
   imgDir: string,
   onProgress: (done: number, total: number, msg: string) => void,
@@ -718,12 +792,6 @@ async function runBhagwatReview(
   const emit = (event: string, data: object) => job.emitter.emit(event, data);
   job.status = "running";
   try {
-    if (!process.env.GEMINI_API_KEY)
-      throw new Error("GEMINI_API_KEY is not configured");
-
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
-
     const segmentList = timeline
       .map(
         (seg, i) =>
@@ -771,16 +839,8 @@ END_SUGGESTIONS
 
 Both arrays can be empty if there's nothing to improve or add. Only suggest new segments for genuinely uncovered moments, not for sections already covered by the plan.`;
 
-    const result = await model.generateContentStream(prompt);
-
     let fullText = "";
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) {
-        fullText += text;
-        emit("chunk", { text });
-      }
-    }
+    fullText = await geminiProStream("", prompt, (text) => emit("chunk", { text }));
 
     // Parse structured suggestions from the marker block
     let improvements: any[] = [];
@@ -1145,10 +1205,7 @@ async function runBhagwatAnalysis(
         ? `\nTranscript (Hindi/English):\n${sampleTranscript(transcript, 400000)}`
         : "\n[No transcript — use video title and description to infer content]";
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-pro",
-      systemInstruction: `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
+    const systemInstruction = `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
 
 Your task: Watch this video (via transcript) exactly like an expert editor sitting at a timeline, and decide the best image to place at every moment of the story. You must think like an editor: "what image best represents what the speaker is saying RIGHT NOW and from what time to which?"
 
@@ -1199,8 +1256,7 @@ RESPOND with ONLY a valid JSON array, no markdown fences:
     "description": "Opening — speaker introduces the katha",
     "imagePrompt": "Peaceful riverside setting at dawn, devotees sitting in a circle reading Shreemad Bhagwat Mahapuran, soft morning light, incense smoke drifting in the air, calm spiritual atmosphere, warm colors, serene and divine mood"
   }
-]`,
-    });
+]`;
 
     const clipNote = clipMode
       ? `\nNOTE: This is a CLIP extracted from ${formatTime(clipStartSec!)} to ${formatTime(clipEndSec!)} of the original video. All timestamps in your response must be RELATIVE to the clip start (i.e., the clip starts at 0s, not at ${clipStartSec}s).`
@@ -1217,8 +1273,7 @@ ${
     : `IMPORTANT: First, read the ENTIRE transcript above from the first line to the last. Then select the BEST image moments spread across the FULL video duration — including the OPENING section (first 30–60 seconds), the middle, and the closing. Do not skip the opening. Write vivid, specific image prompts for each selected moment. Leave gaps between segments where images are not needed you decide. For bhajans, write calm devotional imagery.`
 }`;
 
-    const result = await model.generateContent(userContent);
-    const raw = result.response.text().trim();
+    const raw = (await geminiProContent(systemInstruction, userContent)).trim();
 
     let timeline: TimelineSegment[] = [];
     try {
@@ -1385,8 +1440,6 @@ async function runBhagwatRender(
         : `Downloading audio & generating ${timeline.length} images in parallel…`,
     });
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-
     const audioDownloadPromise: Promise<string> = localAudioPath
       ? Promise.resolve(localAudioPath)
       : (async (): Promise<string> => {
@@ -1430,7 +1483,7 @@ async function runBhagwatRender(
 
     let [audioFile, imagePaths] = await Promise.all([
       audioDownloadPromise,
-      generateAllSegmentImages(genAI, timeline, imgDir, (done, total, desc) => {
+      generateAllSegmentImages(timeline, imgDir, (done, total, desc) => {
         const pct = 8 + Math.round((done / total) * 52); // 8% → 60%
         emit("progress", {
           percent: pct,
@@ -2092,10 +2145,7 @@ async function runBhagwatAnalysisFromFile(
         ? `\nTranscript:\n${sampleTranscript(transcript, 400000)}`
         : "\n[No transcript — use audio title to infer content]";
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-pro",
-      systemInstruction: `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
+    const systemInstruction = `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
 
 Your task: Listen to this audio (via transcript) exactly like an expert editor sitting at a timeline, and decide the best image to place at every moment. You must think like an editor: "what image best represents what the speaker is saying RIGHT NOW and from what time to which?"
 
@@ -2131,8 +2181,7 @@ RESPOND with ONLY a valid JSON array, no markdown fences:
     "description": "Opening narration",
     "imagePrompt": "Peaceful riverside setting at dawn, devotees reading Shreemad Bhagwat, soft morning light, incense smoke, warm devotional atmosphere"
   }
-]`,
-    });
+]`;
 
     const userContent = `Audio: "${videoTitle}"
 Duration: ${videoDuration ? formatTime(videoDuration) : "unknown"} (${videoDuration}s)
@@ -2144,8 +2193,7 @@ ${
     : `Select only the BEST moments for image placement ON THE VIDEO ALL BEST KEY AREAS. Leave some gaps between segments and you can think and edit best way as you want as a senior video editor.`
 }`;
 
-    const result = await model.generateContent(userContent);
-    const raw = result.response.text().trim();
+    const raw = (await geminiProContent(systemInstruction, userContent)).trim();
 
     let timeline: TimelineSegment[] = [];
     try {
