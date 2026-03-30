@@ -587,6 +587,46 @@ function sampleTranscript(transcript: string, maxChars: number): string {
   }
   return `[Transcript sampled from ${lines.length} total lines]\n${out.join("\n")}`;
 }
+
+/**
+ * Converts raw SRT text to compact one-line-per-cue format matching cuesToText().
+ *
+ * Raw SRT (4 lines per block):
+ *   1
+ *   00:00:12,000 --> 00:00:14,200
+ *   Welcome to today's
+ *
+ * Compact output (1 line per cue):
+ *   [00:12] Welcome to today's
+ *
+ * For a 3-hour audio the raw SRT is ~640k chars; compact is ~160k —
+ * always under the 400k Gemini limit so sampleTranscript never activates.
+ */
+function srtToCompact(srt: string): string {
+  const blocks = srt.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
+  const lines: string[] = [];
+  for (const block of blocks) {
+    const rows = block.split("\n").map((r) => r.trim()).filter(Boolean);
+    const tsLine = rows.find((r) => r.includes("-->"));
+    if (!tsLine) continue;
+    const m = tsLine.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d+)/);
+    if (!m) continue;
+    const totalSec =
+      parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+    const mm = Math.floor(totalSec / 60);
+    const ss = totalSec % 60;
+    const tsIdx = rows.indexOf(tsLine);
+    const text = rows
+      .slice(tsIdx + 1)
+      .join(" ")
+      .trim();
+    if (!text) continue;
+    lines.push(
+      `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}] ${text}`,
+    );
+  }
+  return lines.join("\n");
+}
 function formatTime(sec: number): string {
   const h = Math.floor(sec / 3600),
     m = Math.floor((sec % 3600) / 60),
@@ -2101,9 +2141,10 @@ async function runBhagwatAnalysisFromFile(
       "AI editor is reading the content and planning image placements…",
     );
 
+    const compactTranscript = srtToCompact(transcript);
     const transcriptBlock =
-      transcript.length > 50
-        ? `\nTranscript:\n${sampleTranscript(transcript, 400000)}`
+      compactTranscript.length > 50
+        ? `\nTranscript:\n${sampleTranscript(compactTranscript, 400000)}`
         : "\n[No transcript — use audio title to infer content]";
 
     const systemInstruction = `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
