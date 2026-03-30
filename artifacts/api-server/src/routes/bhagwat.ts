@@ -2144,7 +2144,7 @@ async function runBhagwatAnalysisFromFile(
     const compactTranscript = srtToCompact(transcript);
     const transcriptBlock =
       compactTranscript.length > 50
-        ? `\nTranscript:\n${sampleTranscript(compactTranscript, 400000)}`
+        ? `\nTranscript:\n${sampleTranscript(compactTranscript, 1000000)}`
         : "\n[No transcript — use audio title to infer content]";
 
     const systemInstruction = `You are a professional devotional video editor with deep knowledge of Shreemad Bhagwat Mahapuran, Bhagwat Katha, Ramayan, Mahabharat, and all Hindu devotional stories and bhajans. You are fully fluent in Hindi and English.
