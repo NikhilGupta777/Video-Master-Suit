@@ -1753,19 +1753,46 @@ async function runBhagwatRender(
       let batchNum = 0;
       const totalBatches = Math.ceil(outputDur / BATCH_SECS);
 
-      const spawnBatch = (bArgs: string[]): Promise<void> =>
+      // spawnBatch: runs one FFmpeg batch and emits granular within-batch progress.
+      // pctStart/pctEnd bracket the portion of the overall 65-90% range this batch owns.
+      const spawnBatch = (
+        bArgs: string[],
+        pctStart: number,
+        pctEnd: number,
+        batchLabel: string,
+        segDur: number,
+      ): Promise<void> =>
         new Promise<void>((resolve, reject) => {
           const ff = spawn("ffmpeg", bArgs);
-          let stderr = "";
+          let stderrBuf = "";
+          let tailLines = "";
           const wd = setTimeout(() => {
             ff.kill("SIGKILL");
             reject(new Error("FFmpeg batch timed out after 15 minutes"));
           }, 15 * 60 * 1000);
-          ff.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+          ff.stderr.on("data", (d: Buffer) => {
+            const chunk = d.toString();
+            tailLines = (tailLines + chunk).slice(-800); // keep last 800 chars for error reporting
+            stderrBuf += chunk;
+            // Parse FFmpeg's time= progress lines and convert to sub-batch percent
+            const matches = stderrBuf.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/g);
+            if (matches) {
+              const last = matches[matches.length - 1];
+              const [, h, m, s] = last.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/)!;
+              const cur = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s);
+              const frac = segDur > 0 ? Math.min(1, cur / segDur) : 0;
+              const pct = Math.round(pctStart + frac * (pctEnd - pctStart));
+              emit("progress", {
+                percent: pct,
+                message: `Rendering ${batchLabel} (${formatTime(cur)}/${formatTime(segDur)})…`,
+              });
+              stderrBuf = ""; // reset so next parse only sees new chunks
+            }
+          });
           ff.on("close", (code) => {
             clearTimeout(wd);
             if (code === 0) resolve();
-            else reject(new Error(`FFmpeg batch failed (${code}): ${stderr.slice(-500)}`));
+            else reject(new Error(`FFmpeg batch failed (${code}): ${tailLines}`));
           });
         });
 
@@ -1780,9 +1807,14 @@ async function runBhagwatRender(
           (c) => c.endSec > batchStart && c.startSec < batchEnd,
         );
 
+        // Each batch owns an equal slice of the 65–90% progress range
+        const batchPctStart = 65 + Math.round((batchNum / totalBatches) * 25);
+        const batchPctEnd   = 65 + Math.round(((batchNum + 1) / totalBatches) * 25);
+        const batchLabel    = `segment ${batchNum + 1}/${totalBatches} (${formatTime(batchStart)}–${formatTime(batchEnd)})`;
+
         emit("progress", {
-          percent: 65 + Math.round((batchNum / totalBatches) * 25),
-          message: `Rendering segment ${batchNum + 1}/${totalBatches} (${formatTime(batchStart)}–${formatTime(batchEnd)})…`,
+          percent: batchPctStart,
+          message: `Rendering ${batchLabel}…`,
         });
 
         const bArgs: string[] = [
@@ -1794,7 +1826,7 @@ async function runBhagwatRender(
         if (batchClips.length === 0) {
           // No overlays in this window — just transcode the raw video segment
           bArgs.push(
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-y", batchTmpPath,
@@ -1830,7 +1862,7 @@ async function runBhagwatRender(
             "-map", "[vout]",
             "-map", "0:a",
             "-t", batchDur.toFixed(3),
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             "-c:a", "aac", "-b:a", "192k",
@@ -1838,7 +1870,7 @@ async function runBhagwatRender(
           );
         }
 
-        await spawnBatch(bArgs);
+        await spawnBatch(bArgs, batchPctStart, batchPctEnd, batchLabel, batchDur);
         batchNum++;
         batchStart = batchEnd;
       }
@@ -1856,7 +1888,7 @@ async function runBhagwatRender(
         "-c", "copy",
         "-movflags", "+faststart",
         "-y", outputPath,
-      ]);
+      ], 91, 98, "final join", 1);
 
       // Clean up batch temp files
       for (const p of batchTmpPaths) {
