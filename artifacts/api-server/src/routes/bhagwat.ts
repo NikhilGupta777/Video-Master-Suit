@@ -1803,20 +1803,22 @@ async function runBhagwatRender(
         outputPath,
       );
     } else if (clips.length === 1) {
-      // ── Slideshow: single image — no xfade, just fade-in from black ──────────
-      const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
+      // ── Slideshow: single image — fade-in from black, fade-out to black ───────
+      const dur = clips[0].dur;
+      const FIRST_FADEIN = Math.min(3.0, dur * 0.4);
+      const LAST_FADEOUT = Math.min(3.0, dur * 0.4);
       ffArgs.push(
         "-loop",
         "1",
         "-t",
-        clips[0].dur.toFixed(3),
+        dur.toFixed(3),
         "-i",
         clips[0].imgPath,
       );
       ffArgs.push("-i", audioFile);
       ffArgs.push(
         "-vf",
-        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}`,
+        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN},fade=t=out:st=${(dur - LAST_FADEOUT).toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}`,
         "-c:v",
         "libx264",
         "-preset",
@@ -1837,26 +1839,60 @@ async function runBhagwatRender(
       );
     } else {
       // ── Slideshow: multiple images ────────────────────────────────────────────
-      // Use the concat demuxer — it reads one image at a time so memory usage is
-      // constant regardless of clip count. The xfade filter chain was replaced
-      // because it loads ALL images simultaneously into a filter graph, which
-      // causes FFmpeg to be killed (SIGKILL/null exit code) on memory-limited
-      // environments like Replit for even 2-6 clips at 1920x1080.
+      // Uses the concat demuxer (reads one image at a time — constant memory
+      // regardless of clip count). Fades are applied as chained FFmpeg `fade`
+      // filter expressions using absolute timestamps, so no extra memory is
+      // needed — just CPU time in the filter graph.
       //
-      // Concat demuxer format (FFmpeg requires the last file to be repeated
-      // without a duration to avoid a 0-duration final frame):
-      //   file '/path/img1.png'
-      //   duration 5.000
-      //   file '/path/img2.png'
-      //   duration 3.000
-      //   file '/path/img2.png'   ← last entry, no duration
+      // Fade timings:
+      //   • 3 s fade-in from black at the very start
+      //   • 1.2 s fade-to-black / fade-from-black at each clip boundary
+      //   • 3 s fade-out to black at the very end
+
+      const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
+      const LAST_FADEOUT = Math.min(3.0, clips[clips.length - 1].dur * 0.4);
+      // Between-clip fade: cap at 80% of the shortest clip so fades never overlap
+      const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
+
+      // Compute absolute start time of each clip in the concatenated stream
+      const clipStarts: number[] = [];
+      let cumT = 0;
+      for (const clip of clips) {
+        clipStarts.push(cumT);
+        cumT += clip.dur;
+      }
+      const totalConcatDur = cumT;
+
+      // Build chained fade filter string
+      const fadeFilters: string[] = [];
+      // Fade in from black at the start
+      fadeFilters.push(`fade=t=in:st=0:d=${FIRST_FADEIN.toFixed(3)}`);
+      // For each clip boundary: fade out then fade in (creates black flash between clips)
+      for (let i = 0; i < clips.length - 1; i++) {
+        const boundaryT = clipStarts[i] + clips[i].dur;
+        fadeFilters.push(
+          `fade=t=out:st=${(boundaryT - FADE_DUR).toFixed(3)}:d=${FADE_DUR.toFixed(3)}`,
+        );
+        fadeFilters.push(
+          `fade=t=in:st=${boundaryT.toFixed(3)}:d=${FADE_DUR.toFixed(3)}`,
+        );
+      }
+      // Fade out to black at the very end
+      fadeFilters.push(
+        `fade=t=out:st=${(totalConcatDur - LAST_FADEOUT).toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}`,
+      );
+
+      const vf = `${SCALE},${fadeFilters.join(",")}`;
+
+      // Concat demuxer format (last file must be repeated without a duration)
       const concatLines: string[] = [];
       for (const clip of clips) {
         concatLines.push(`file '${clip.imgPath.replace(/'/g, "'\\''")}'`);
         concatLines.push(`duration ${clip.dur.toFixed(3)}`);
       }
-      // Repeat last file (required by FFmpeg concat demuxer for still images)
-      concatLines.push(`file '${clips[clips.length - 1].imgPath.replace(/'/g, "'\\''")}'`);
+      concatLines.push(
+        `file '${clips[clips.length - 1].imgPath.replace(/'/g, "'\\''")}'`,
+      );
 
       const concatListPath = join(imgDir, "concat.txt");
       writeFileSync(concatListPath, concatLines.join("\n"));
@@ -1866,7 +1902,7 @@ async function runBhagwatRender(
         "-safe", "0",
         "-i", concatListPath,
         "-i", audioFile,
-        "-vf", SCALE,
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "18",
