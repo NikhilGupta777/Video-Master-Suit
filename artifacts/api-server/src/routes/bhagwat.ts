@@ -1823,75 +1823,134 @@ async function runBhagwatRender(
         outputPath,
       );
     } else {
-      // ── Slideshow: multiple images — chain xfade between consecutive pairs ───
+      // ── Slideshow: multiple images ────────────────────────────────────────────
+      // For large clip counts (>8) use a batched approach: render each clip to a
+      // temp video individually (very low memory), then concat + mix audio.
+      // For small counts (≤8) use the xfade chain for smooth cross-fade transitions.
       const FADE_DUR = Math.min(
         1.2,
         Math.min(...clips.map((c) => c.dur)) * 0.8,
       );
       const FIRST_FADEIN = Math.min(3.0, clips[0].dur * 0.4);
 
-      ffArgs.push(
-        "-thread_queue_size", "512",
-        "-loop", "1",
-        "-r", "25",
-        "-t", clips[0].dur.toFixed(3),
-        "-i", clips[0].imgPath,
-      );
-      for (let i = 1; i < clips.length; i++) {
+      if (clips.length > 8) {
+        // ── Batched approach: one FFmpeg per clip → concat → mix audio ───────────
+        const clipVideos: string[] = [];
+        for (let ci = 0; ci < clips.length; ci++) {
+          const clip = clips[ci];
+          const clipOut = join(imgDir, `clip_seg_${ci}.mp4`);
+          const fadeFilter =
+            ci === 0
+              ? `${SCALE},fade=t=in:st=0:d=${Math.min(FIRST_FADEIN, clip.dur * 0.4).toFixed(3)}`
+              : SCALE;
+          await new Promise<void>((resolve, reject) => {
+            const ff2 = spawn("ffmpeg", [
+              "-loop", "1",
+              "-r", "25",
+              "-t", clip.dur.toFixed(3),
+              "-i", clip.imgPath,
+              "-vf", fadeFilter,
+              "-c:v", "libx264",
+              "-preset", "ultrafast",
+              "-crf", "23",
+              "-pix_fmt", "yuv420p",
+              "-an",
+              "-y",
+              clipOut,
+            ]);
+            let stderr2 = "";
+            ff2.stderr.on("data", (d: Buffer) => { stderr2 += d.toString(); });
+            ff2.on("close", (code2) => {
+              if (code2 === 0) { clipVideos.push(clipOut); resolve(); }
+              else reject(new Error(`Clip encode failed (${ci}): ${stderr2.slice(-300)}`));
+            });
+          });
+          const clipPct = 65 + Math.round(((ci + 1) / clips.length) * 20);
+          emit("progress", { percent: clipPct, message: `Encoding clip ${ci + 1}/${clips.length}…` });
+        }
+        const concatListPath = join(imgDir, "concat.txt");
+        writeFileSync(concatListPath, clipVideos.map((p) => `file '${p}'`).join("\n"));
+        ffArgs.push(
+          "-f", "concat",
+          "-safe", "0",
+          "-i", concatListPath,
+          "-i", audioFile,
+          "-c:v", "libx264",
+          "-preset", "fast",
+          "-crf", "18",
+          "-pix_fmt", "yuv420p",
+          "-movflags", "+faststart",
+          "-c:a", "aac",
+          "-b:a", "192k",
+          "-shortest",
+          "-y",
+          outputPath,
+        );
+      } else {
+        // ── Small clip count: xfade chain for smooth transitions ─────────────────
         ffArgs.push(
           "-thread_queue_size", "512",
           "-loop", "1",
           "-r", "25",
-          "-t", (clips[i].dur + FADE_DUR).toFixed(3),
-          "-i", clips[i].imgPath,
+          "-t", clips[0].dur.toFixed(3),
+          "-i", clips[0].imgPath,
+        );
+        for (let i = 1; i < clips.length; i++) {
+          ffArgs.push(
+            "-thread_queue_size", "512",
+            "-loop", "1",
+            "-r", "25",
+            "-t", (clips[i].dur + FADE_DUR).toFixed(3),
+            "-i", clips[i].imgPath,
+          );
+        }
+        ffArgs.push("-thread_queue_size", "512", "-i", audioFile);
+
+        const filterParts: string[] = [];
+        filterParts.push(`[0]${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}[v0]`);
+        for (let i = 1; i < clips.length; i++) {
+          filterParts.push(`[${i}]${SCALE}[v${i}]`);
+        }
+
+        let cumDur = 0;
+        let prevLabel = "v0";
+        for (let i = 1; i < clips.length; i++) {
+          cumDur += clips[i - 1].dur;
+          const offset = Math.max(0, cumDur - FADE_DUR);
+          const outLabel = i === clips.length - 1 ? "vout" : `x${i}`;
+          filterParts.push(
+            `[${prevLabel}][v${i}]xfade=transition=fadeblack:duration=${FADE_DUR.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`,
+          );
+          prevLabel = outLabel;
+        }
+
+        const audioInputIdx = clips.length;
+        ffArgs.push(
+          "-filter_complex",
+          filterParts.join(";"),
+          "-map",
+          "[vout]",
+          "-map",
+          `${audioInputIdx}:a`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "fast",
+          "-crf",
+          "18",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-shortest",
+          "-y",
+          outputPath,
         );
       }
-      ffArgs.push("-thread_queue_size", "512", "-i", audioFile);
-
-      const filterParts: string[] = [];
-      filterParts.push(`[0]${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN}[v0]`);
-      for (let i = 1; i < clips.length; i++) {
-        filterParts.push(`[${i}]${SCALE}[v${i}]`);
-      }
-
-      let cumDur = 0;
-      let prevLabel = "v0";
-      for (let i = 1; i < clips.length; i++) {
-        cumDur += clips[i - 1].dur;
-        const offset = Math.max(0, cumDur - FADE_DUR);
-        const outLabel = i === clips.length - 1 ? "vout" : `x${i}`;
-        filterParts.push(
-          `[${prevLabel}][v${i}]xfade=transition=fadeblack:duration=${FADE_DUR.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`,
-        );
-        prevLabel = outLabel;
-      }
-
-      const audioInputIdx = clips.length;
-      ffArgs.push(
-        "-filter_complex",
-        filterParts.join(";"),
-        "-map",
-        "[vout]",
-        "-map",
-        `${audioInputIdx}:a`,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-shortest",
-        "-y",
-        outputPath,
-      );
     }
 
     await new Promise<void>((resolve, reject) => {
