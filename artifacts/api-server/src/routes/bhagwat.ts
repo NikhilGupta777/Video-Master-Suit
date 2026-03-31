@@ -1838,12 +1838,15 @@ async function runBhagwatRender(
         outputPath,
       );
     } else {
-      // ── Slideshow: multiple images — per-clip rendering ───────────────────────
-      // WHY: Chained fade=t=out filters permanently hold brightness at 0 after
-      // their end time, so every clip after the first boundary is black.
-      // FIX: Render each image into its own short .mp4 with isolated fades
-      // (each clip's fades are self-contained), then concat all clip videos
-      // with the audio track. The concat demuxer approach is unchanged.
+      // ── Slideshow: multiple images ────────────────────────────────────────────
+      // Uses the concat demuxer (reads one image at a time — constant memory
+      // regardless of clip count). Fades are applied as chained FFmpeg `fade`
+      // filter expressions using absolute timestamps.
+      //
+      // Each fade filter has an `enable` expression that confines it to its own
+      // time window. Without `enable`, fade=t=out permanently holds brightness
+      // at 0 after its end time — making every subsequent clip black. With
+      // `enable`, the filter passes frames through unchanged outside its window.
       //
       // Fade timings:
       //   • up to 3 s fade-in from black at the very start
@@ -1855,65 +1858,64 @@ async function runBhagwatRender(
       // Between-clip fade: cap at 80% of the shortest clip so fades never overlap
       const FADE_DUR = Math.min(1.2, Math.min(...clips.map((c) => c.dur)) * 0.8);
 
-      // Step A: Render each image into its own temp .mp4 with its own fades
-      const clipVideoPaths: string[] = [];
-      for (let i = 0; i < clips.length; i++) {
-        const clip = clips[i];
-        const isFirst = i === 0;
-        const isLast = i === clips.length - 1;
-        const fadeIn = isFirst ? FIRST_FADEIN : FADE_DUR;
-        const fadeOut = isLast ? LAST_FADEOUT : FADE_DUR;
-        const fadeOutStart = Math.max(0, clip.dur - fadeOut);
-
-        const clipVf = `${SCALE},fade=t=in:st=0:d=${fadeIn.toFixed(3)},fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
-        const clipVideoPath = join(imgDir, `clip_${i}.mp4`);
-
-        await new Promise<void>((resolve, reject) => {
-          const ff = spawn("ffmpeg", [
-            "-loop", "1",
-            "-t", clip.dur.toFixed(3),
-            "-i", clip.imgPath,
-            "-vf", clipVf,
-            "-c:v", "libx264",
-            "-r", "25",
-            "-crf", "18",
-            "-preset", "fast",
-            "-pix_fmt", "yuv420p",
-            "-y",
-            clipVideoPath,
-          ]);
-          ff.on("error", reject);
-          let ffStderr = "";
-          ff.stderr.on("data", (d: Buffer) => { ffStderr += d.toString(); });
-          ff.on("close", (code) =>
-            code === 0
-              ? resolve()
-              : reject(new Error(`Clip ${i} render failed (code ${code}): ${ffStderr.slice(-200)}`))
-          );
-        });
-
-        clipVideoPaths.push(clipVideoPath);
-        emit("progress", {
-          percent: 65 + Math.round(((i + 1) / clips.length) * 15),
-          message: `Rendering clip ${i + 1}/${clips.length}…`,
-        });
+      // Compute absolute start time of each clip in the concatenated stream
+      const clipStarts: number[] = [];
+      let cumT = 0;
+      for (const clip of clips) {
+        clipStarts.push(cumT);
+        cumT += clip.dur;
       }
+      const totalConcatDur = cumT;
 
-      // Step B: Build concat list of per-clip videos
+      // Build chained fade filter string — each fade is time-gated with enable
+      const fadeFilters: string[] = [];
+      // Fade in from black at the start (active only during the fade window)
+      fadeFilters.push(
+        `fade=t=in:st=0:d=${FIRST_FADEIN.toFixed(3)}:enable='lte(t,${FIRST_FADEIN.toFixed(3)})'`,
+      );
+      // For each clip boundary: fade out then fade in (creates black flash between clips)
+      for (let i = 0; i < clips.length - 1; i++) {
+        const boundaryT = clipStarts[i] + clips[i].dur;
+        const foSt = boundaryT - FADE_DUR;
+        const fiEnd = boundaryT + FADE_DUR;
+        fadeFilters.push(
+          `fade=t=out:st=${foSt.toFixed(3)}:d=${FADE_DUR.toFixed(3)}:enable='between(t,${foSt.toFixed(3)},${boundaryT.toFixed(3)})'`,
+        );
+        fadeFilters.push(
+          `fade=t=in:st=${boundaryT.toFixed(3)}:d=${FADE_DUR.toFixed(3)}:enable='between(t,${boundaryT.toFixed(3)},${fiEnd.toFixed(3)})'`,
+        );
+      }
+      // Fade out to black at the very end (active only during the fade window)
+      const lastFoSt = totalConcatDur - LAST_FADEOUT;
+      fadeFilters.push(
+        `fade=t=out:st=${lastFoSt.toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}:enable='gte(t,${lastFoSt.toFixed(3)})'`,
+      );
+
+      const vf = `${SCALE},${fadeFilters.join(",")}`;
+
+      // Concat demuxer format (last file must be repeated without a duration)
       const concatLines: string[] = [];
-      for (const p of clipVideoPaths) {
-        concatLines.push(`file '${p.replace(/'/g, "'\\''")}'`);
+      for (const clip of clips) {
+        concatLines.push(`file '${clip.imgPath.replace(/'/g, "'\\''")}'`);
+        concatLines.push(`duration ${clip.dur.toFixed(3)}`);
       }
+      concatLines.push(
+        `file '${clips[clips.length - 1].imgPath.replace(/'/g, "'\\''")}'`,
+      );
+
       const concatListPath = join(imgDir, "concat.txt");
       writeFileSync(concatListPath, concatLines.join("\n"));
 
-      // Step C: Concat clip videos + mix with audio (copy video — no re-encode)
       ffArgs.push(
         "-f", "concat",
         "-safe", "0",
         "-i", concatListPath,
         "-i", audioFile,
-        "-c:v", "copy",
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         "-c:a", "aac",
         "-b:a", "192k",
