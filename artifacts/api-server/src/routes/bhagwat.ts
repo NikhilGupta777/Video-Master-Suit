@@ -1734,78 +1734,134 @@ async function runBhagwatRender(
     const ffArgs: string[] = [];
 
     if (isVideoOverlayMode) {
-      // ── Video overlay mode: original video as base, AI images overlaid ──────
-      // Seek to clip start if needed (timestamps in clips are already relative to clip start)
-      if (clipStartSec !== undefined && clipStartSec > 0) {
-        ffArgs.push("-ss", String(clipStartSec));
-      }
-      ffArgs.push("-i", audioFile); // audioFile is the full video in this mode
+      // ── Video overlay mode: batched rendering to prevent OOM on long videos ──
+      // Instead of loading all N images simultaneously into one FFmpeg call
+      // (which crashes with 100+ images on 15-min videos), we split the video
+      // into 2-minute segments. Each segment only loads its own ~15 images,
+      // then all segment outputs are joined with stream copy (no re-encode).
+      // Memory stays flat regardless of total clip count.
 
-      // Each unique overlay clip as a looped image input (available for full duration)
-      const imgLoopDur = (totalDuration > 0 ? totalDuration : 3600) + 5;
-      for (const clip of clips) {
-        ffArgs.push(
-          "-loop",
-          "1",
-          "-t",
-          imgLoopDur.toFixed(3),
-          "-i",
-          clip.imgPath,
+      const BATCH_SECS = 120; // 2-minute segments ≈ 15 clips max per FFmpeg call
+      const sourceOffset = clipStartSec ?? 0;
+      const outputDur =
+        clipStartSec !== undefined && clipEndSec !== undefined
+          ? clipEndSec - clipStartSec
+          : totalDuration || videoDuration;
+
+      const batchTmpPaths: string[] = [];
+      let batchStart = 0;
+      let batchNum = 0;
+      const totalBatches = Math.ceil(outputDur / BATCH_SECS);
+
+      const spawnBatch = (bArgs: string[]): Promise<void> =>
+        new Promise<void>((resolve, reject) => {
+          const ff = spawn("ffmpeg", bArgs);
+          let stderr = "";
+          const wd = setTimeout(() => {
+            ff.kill("SIGKILL");
+            reject(new Error("FFmpeg batch timed out after 15 minutes"));
+          }, 15 * 60 * 1000);
+          ff.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+          ff.on("close", (code) => {
+            clearTimeout(wd);
+            if (code === 0) resolve();
+            else reject(new Error(`FFmpeg batch failed (${code}): ${stderr.slice(-500)}`));
+          });
+        });
+
+      while (batchStart < outputDur - 0.05) {
+        const batchEnd = Math.min(batchStart + BATCH_SECS, outputDur);
+        const batchDur = batchEnd - batchStart;
+        const batchTmpPath = join(imgDir, `ovbatch_${batchNum}.mp4`);
+        batchTmpPaths.push(batchTmpPath);
+
+        // Clips that overlap this batch window (timestamps are relative to output start)
+        const batchClips = clips.filter(
+          (c) => c.endSec > batchStart && c.startSec < batchEnd,
         );
-      }
 
-      const filterParts: string[] = [];
-      filterParts.push(`[0:v]${SCALE}[base]`);
-      for (let i = 0; i < clips.length; i++) {
-        filterParts.push(`[${i + 1}:v]${SCALE}[ov${i}]`);
-      }
+        emit("progress", {
+          percent: 65 + Math.round((batchNum / totalBatches) * 25),
+          message: `Rendering segment ${batchNum + 1}/${totalBatches} (${formatTime(batchStart)}–${formatTime(batchEnd)})…`,
+        });
 
-      if (clips.length === 0) {
-        // No overlays — just transcode the video directly
-        filterParts.push("[base]copy[vout]");
-      } else {
-        let prevLabel = "base";
-        for (let i = 0; i < clips.length; i++) {
-          const clip = clips[i];
-          const outLabel = i === clips.length - 1 ? "vout" : `chain${i}`;
-          filterParts.push(
-            `[${prevLabel}][ov${i}]overlay=enable='between(t,${clip.startSec.toFixed(3)},${clip.endSec.toFixed(3)})'[${outLabel}]`,
+        const bArgs: string[] = [
+          "-ss", (sourceOffset + batchStart).toFixed(3),
+          "-t", batchDur.toFixed(3),
+          "-i", audioFile,
+        ];
+
+        if (batchClips.length === 0) {
+          // No overlays in this window — just transcode the raw video segment
+          bArgs.push(
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-y", batchTmpPath,
           );
-          prevLabel = outLabel;
+        } else {
+          // Load each clip as a looped image scoped to this batch duration only
+          const loopDur = batchDur + 2;
+          for (const clip of batchClips) {
+            bArgs.push("-loop", "1", "-t", loopDur.toFixed(3), "-i", clip.imgPath);
+          }
+
+          // Build filter: scale base video, scale each overlay, chain them
+          const fParts: string[] = [];
+          fParts.push(`[0:v]${SCALE}[base]`);
+          for (let i = 0; i < batchClips.length; i++) {
+            fParts.push(`[${i + 1}:v]${SCALE}[ov${i}]`);
+          }
+          let prevLabel = "base";
+          for (let i = 0; i < batchClips.length; i++) {
+            const clip = batchClips[i];
+            // Timestamps relative to this batch's start so FFmpeg t=0 lines up
+            const relStart = Math.max(0, clip.startSec - batchStart);
+            const relEnd = Math.min(batchDur, clip.endSec - batchStart);
+            const outLabel = i === batchClips.length - 1 ? "vout" : `chain${i}`;
+            fParts.push(
+              `[${prevLabel}][ov${i}]overlay=enable='between(t,${relStart.toFixed(3)},${relEnd.toFixed(3)})'[${outLabel}]`,
+            );
+            prevLabel = outLabel;
+          }
+
+          bArgs.push(
+            "-filter_complex", fParts.join(";"),
+            "-map", "[vout]",
+            "-map", "0:a",
+            "-t", batchDur.toFixed(3),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "192k",
+            "-y", batchTmpPath,
+          );
         }
+
+        await spawnBatch(bArgs);
+        batchNum++;
+        batchStart = batchEnd;
       }
 
-      ffArgs.push(
-        "-filter_complex",
-        filterParts.join(";"),
-        "-map",
-        "[vout]",
-        "-map",
-        "0:a",
+      // Join all batch segments with stream copy — no re-encode, near-instant
+      emit("progress", { percent: 91, message: "Joining segments into final video…" });
+      const batchConcatPath = join(imgDir, "batch_concat.txt");
+      writeFileSync(
+        batchConcatPath,
+        batchTmpPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"),
       );
+      await spawnBatch([
+        "-f", "concat", "-safe", "0",
+        "-i", batchConcatPath,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        "-y", outputPath,
+      ]);
 
-      if (clipStartSec !== undefined && clipEndSec !== undefined) {
-        ffArgs.push("-t", String(clipEndSec - clipStartSec));
+      // Clean up batch temp files
+      for (const p of batchTmpPaths) {
+        try { unlinkSync(p); } catch {}
       }
-
-      ffArgs.push(
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-y",
-        outputPath,
-      );
     } else if (clips.length === 1) {
       // ── Slideshow: single image — fade-in from black, fade-out to black ───────
       const dur = clips[0].dur;
@@ -1929,55 +1985,57 @@ async function runBhagwatRender(
       );
     }
 
-    await new Promise<void>((resolve, reject) => {
-      const ff = spawn("ffmpeg", ffArgs);
-      let stderr = "";
-      let resolved = false;
+    if (!isVideoOverlayMode) {
+      await new Promise<void>((resolve, reject) => {
+        const ff = spawn("ffmpeg", ffArgs);
+        let stderr = "";
+        let resolved = false;
 
-      // Watchdog: kill FFmpeg if it hangs for more than 30 minutes
-      const watchdog = setTimeout(
-        () => {
-          if (!resolved) {
-            ff.kill("SIGKILL");
-            reject(new Error("FFmpeg timed out after 30 minutes"));
+        // Watchdog: kill FFmpeg if it hangs for more than 30 minutes
+        const watchdog = setTimeout(
+          () => {
+            if (!resolved) {
+              ff.kill("SIGKILL");
+              reject(new Error("FFmpeg timed out after 30 minutes"));
+            }
+          },
+          30 * 60 * 1000,
+        );
+
+        ff.stderr.on("data", (d: Buffer) => {
+          stderr += d.toString();
+          const match = stderr.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/g);
+          if (match) {
+            const last = match[match.length - 1];
+            const [, h, m, s] = last.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/)!;
+            const cur = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s);
+            const pct =
+              totalDuration > 0
+                ? Math.min(98, 65 + Math.round((cur / totalDuration) * 33))
+                : 80;
+            emit("progress", {
+              percent: pct,
+              message: `Rendering… ${formatTime(cur)} / ${formatTime(totalDuration)}`,
+            });
           }
-        },
-        30 * 60 * 1000,
-      );
-
-      ff.stderr.on("data", (d: Buffer) => {
-        stderr += d.toString();
-        const match = stderr.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/g);
-        if (match) {
-          const last = match[match.length - 1];
-          const [, h, m, s] = last.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/)!;
-          const cur = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s);
-          const pct =
-            totalDuration > 0
-              ? Math.min(98, 65 + Math.round((cur / totalDuration) * 33))
-              : 80;
-          emit("progress", {
-            percent: pct,
-            message: `Rendering… ${formatTime(cur)} / ${formatTime(totalDuration)}`,
-          });
-        }
+        });
+        ff.on("close", (code) => {
+          resolved = true;
+          clearTimeout(watchdog);
+          if (code === 0) {
+            resolve();
+          } else {
+            const tail = stderr.slice(-600);
+            const msg =
+              code === null
+                ? `FFmpeg was killed by the system (likely out of memory). Stderr: ${tail}`
+                : `FFmpeg exited with code ${code}: ${tail}`;
+            console.error("[bhagwat/render] FFmpeg failure details:\n", stderr.slice(-1200));
+            reject(new Error(msg));
+          }
+        });
       });
-      ff.on("close", (code) => {
-        resolved = true;
-        clearTimeout(watchdog);
-        if (code === 0) {
-          resolve();
-        } else {
-          const tail = stderr.slice(-600);
-          const msg =
-            code === null
-              ? `FFmpeg was killed by the system (likely out of memory). Stderr: ${tail}`
-              : `FFmpeg exited with code ${code}: ${tail}`;
-          console.error("[bhagwat/render] FFmpeg failure details:\n", stderr.slice(-1200));
-          reject(new Error(msg));
-        }
-      });
-    });
+    }
 
     // ── 5. Cleanup ────────────────────────────────────────────────────────────
     // Don't delete user-uploaded audio; only clean up yt-dlp downloads / trimmed files we created
