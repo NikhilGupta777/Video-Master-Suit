@@ -194,14 +194,14 @@ function extractImageBytes(response: any): Buffer {
   return Buffer.from(imagePart.inlineData.data, "base64");
 }
 
-async function generateImageViaReplit(prompt: string): Promise<Buffer> {
+async function generateImageViaReplit(prompt: string, model = "gemini-2.5-flash-image"): Promise<Buffer> {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   if (!baseUrl || !apiKey) throw new Error("Replit AI integration not configured");
 
   const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
   const response = await client.models.generateContent({
-    model: "gemini-2.5-flash-image",
+    model,
     contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
     config: { responseModalities: [Modality.IMAGE] },
   });
@@ -232,25 +232,38 @@ function isAnyAIConfigured(): boolean {
 }
 
 async function generateImage(prompt: string, outputPath: string): Promise<void> {
-  // 1. Try Replit integration first
   const replitReady =
     !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL &&
     !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
 
+  // 1. Try Replit integration: fast flash model
   if (replitReady) {
     try {
-      const bytes = await generateImageViaReplit(prompt);
+      const bytes = await generateImageViaReplit(prompt, "gemini-2.5-flash-image");
       writeFileSync(outputPath, bytes);
       return;
     } catch (err) {
       console.warn(
-        "[bhagwat/img] Replit image gen failed, falling back to own key:",
+        "[bhagwat/img] Replit flash image gen failed, trying pro model:",
+        (err as Error).message,
+      );
+    }
+
+    // 1b. Brief pause then try the Replit pro image model
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const bytes = await generateImageViaReplit(prompt, "gemini-3-pro-image-preview");
+      writeFileSync(outputPath, bytes);
+      return;
+    } catch (err) {
+      console.warn(
+        "[bhagwat/img] Replit pro image gen also failed, falling back to own key:",
         (err as Error).message,
       );
     }
   }
 
-  // 2. Fallback: own GEMINI_API_KEY
+  // 2. Final fallback: own GEMINI_API_KEY
   const bytes = await generateImageViaOwnKey(prompt);
   writeFileSync(outputPath, bytes);
 }
