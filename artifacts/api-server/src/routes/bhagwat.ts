@@ -1354,8 +1354,8 @@ ${
           )
           .map(
             (s: any): TimelineSegment => ({
-              startSec: Math.max(0, Math.round(s.startSec)),
-              endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
+              startSec: Math.max(0, s.startSec),
+              endSec: Math.min(videoDuration || 999999, s.endSec),
               isBhajan: s.isBhajan === true,
               imageChangeEvery:
                 s.isBhajan === true
@@ -1679,6 +1679,10 @@ async function runBhagwatRender(
 
       for (const clip of clips) {
         if (clip.startSec > cursor + 0.5) {
+          const gapDur = clip.startSec - cursor;
+          console.warn(
+            `[bhagwat/render] Gap of ${gapDur.toFixed(2)}s detected between ${cursor.toFixed(2)}s and ${clip.startSec.toFixed(2)}s — filling with ${mode === "smart" && blackImgPath ? "black frame" : "previous image"}`
+          );
           const gapImg =
             mode === "smart" && blackImgPath
               ? blackImgPath
@@ -1687,7 +1691,7 @@ async function runBhagwatRender(
                 : clip.imgPath;
           filled.push({
             imgPath: gapImg,
-            dur: clip.startSec - cursor,
+            dur: gapDur,
             startSec: cursor,
             endSec: clip.startSec,
           });
@@ -2255,8 +2259,8 @@ ${
           )
           .map(
             (s: any): TimelineSegment => ({
-              startSec: Math.max(0, Math.round(s.startSec)),
-              endSec: Math.min(videoDuration || 999999, Math.round(s.endSec)),
+              startSec: Math.max(0, s.startSec),
+              endSec: Math.min(videoDuration || 999999, s.endSec),
               isBhajan: s.isBhajan === true,
               imageChangeEvery:
                 s.isBhajan === true
