@@ -170,14 +170,11 @@ importers:
         specifier: ^4.16.12
         version: 4.16.12
       '@google/genai':
-        specifier: ^1.0.0
+        specifier: ^1.46.0
         version: 1.46.0
       '@google/generative-ai':
         specifier: ^0.24.1
         version: 0.24.1
-      '@types/multer':
-        specifier: ^2.1.0
-        version: 2.1.0
       '@workspace/api-zod':
         specifier: workspace:*
         version: link:../../lib/api-zod
@@ -227,6 +224,9 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+      '@types/multer':
+        specifier: ^2.1.0
+        version: 2.1.0
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
