@@ -541,6 +541,7 @@ function BhagwatEditor({
   const [errorMsg, setErrorMsg] = useState("");
   const { toast } = useToast();
   const esRef = useRef<EventSource | null>(null);
+  const [sseReconnecting, setSseReconnecting] = useState(false);
 
   const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
   const [renderJobId, setRenderJobId] = useState<string | null>(null);
@@ -592,6 +593,8 @@ function BhagwatEditor({
     const session = {
       phase,
       mode,
+      url,
+      sourceMode,
       savedAt: Date.now(),
       ...(phase === "analyzing" && analyzeJobId && { analyzeJobId }),
       ...(phase === "analyzed" && { timeline, videoTitle, videoDuration, transcriptText }),
@@ -605,7 +608,7 @@ function BhagwatEditor({
       }),
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  }, [phase, mode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage]);
+  }, [phase, mode, url, sourceMode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage]);
 
   // ── On mount: restore session and reconnect to running jobs ───────────────────
   useEffect(() => {
@@ -621,6 +624,8 @@ function BhagwatEditor({
 
       if (session.phase === "analyzed" && Array.isArray(session.timeline)) {
         setMode(session.mode ?? "full");
+        if (session.url) setUrl(session.url);
+        setSourceMode(session.sourceMode ?? "youtube");
         setTimeline(session.timeline);
         setVideoTitle(session.videoTitle ?? "");
         setVideoDuration(session.videoDuration ?? 0);
@@ -632,27 +637,36 @@ function BhagwatEditor({
 
       if (session.phase === "analyzing" && session.analyzeJobId) {
         setMode(session.mode ?? "full");
+        if (session.url) setUrl(session.url);
+        setSourceMode(session.sourceMode ?? "youtube");
         setPhase("analyzing");
         setSteps({ metadata: { status: "idle", message: "" }, transcript: { status: "idle", message: "" }, ai: { status: "idle", message: "" } });
         setAnalyzeJobId(session.analyzeJobId);
         const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${session.analyzeJobId}`);
         esRef.current = es;
-        es.addEventListener("step", e => { const d = JSON.parse(e.data); setStep(d.step, d.status, d.message); });
+        es.addEventListener("step", e => { setSseReconnecting(false); const d = JSON.parse(e.data); setStep(d.step, d.status, d.message); });
         es.addEventListener("done", e => {
+          setSseReconnecting(false);
           const d = JSON.parse(e.data);
           setTimeline(d.timeline); setVideoTitle(d.videoTitle ?? ""); setVideoDuration(d.videoDuration ?? 0); setTranscriptText(d.transcriptText ?? "");
           setPhase("analyzed"); es.close();
         });
         es.addEventListener("jobError", e => {
+          setSseReconnecting(false);
           const d = JSON.parse((e as MessageEvent).data);
           setErrorMsg(d.message ?? "Analysis failed"); setPhase("error"); es.close();
         });
-        es.onerror = () => { localStorage.removeItem(SESSION_KEY); setPhase("idle"); es.close(); };
+        es.onerror = () => {
+          if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+          localStorage.removeItem(SESSION_KEY); setPhase("idle");
+        };
         return;
       }
 
       if (session.phase === "rendering" && session.renderJobId) {
         setMode(session.mode ?? "full");
+        if (session.url) setUrl(session.url);
+        setSourceMode(session.sourceMode ?? "youtube");
         if (Array.isArray(session.timeline)) {
           setTimeline(session.timeline); setVideoTitle(session.videoTitle ?? ""); setVideoDuration(session.videoDuration ?? 0);
         }
@@ -662,17 +676,22 @@ function BhagwatEditor({
         setPhase("rendering");
         const es = new EventSource(`${BASE}/api/bhagwat/render-status/${session.renderJobId}`);
         esRef.current = es;
-        es.addEventListener("progress", e => { const d = JSON.parse(e.data); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
+        es.addEventListener("progress", e => { setSseReconnecting(false); const d = JSON.parse(e.data); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
         es.addEventListener("done", e => {
+          setSseReconnecting(false);
           const d = JSON.parse(e.data);
           setDownloadUrl(`${BASE}${d.downloadUrl}`); setDownloadFilename(d.filename ?? "bhagwat_video.mp4");
           setPhase("done"); es.close();
         });
         es.addEventListener("jobError", e => {
+          setSseReconnecting(false);
           const d = JSON.parse((e as MessageEvent).data);
           setErrorMsg(d.message ?? "Render failed"); setPhase("error"); es.close();
         });
-        es.onerror = () => { localStorage.removeItem(SESSION_KEY); setPhase("idle"); es.close(); };
+        es.onerror = () => {
+          if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+          localStorage.removeItem(SESSION_KEY); setPhase("idle");
+        };
       }
     } catch { localStorage.removeItem(SESSION_KEY); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -828,10 +847,12 @@ function BhagwatEditor({
       esRef.current = es;
 
       es.addEventListener("step", e => {
+        setSseReconnecting(false);
         const d = JSON.parse(e.data);
         setStep(d.step, d.status, d.message);
       });
       es.addEventListener("done", e => {
+        setSseReconnecting(false);
         const d = JSON.parse(e.data);
         setTimeline(d.timeline);
         setVideoTitle(d.videoTitle ?? "");
@@ -841,12 +862,18 @@ function BhagwatEditor({
         es.close();
       });
       es.addEventListener("jobError", e => {
+        setSseReconnecting(false);
         const d = JSON.parse((e as MessageEvent).data);
         setErrorMsg(d.message ?? "Analysis failed");
         setPhase("error");
         es.close();
       });
-      es.onerror = () => { setErrorMsg("Connection error during analysis — please try again"); setPhase("error"); es.close(); };
+      es.onerror = () => {
+        if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+        setSseReconnecting(false);
+        setErrorMsg("Connection error during analysis — please try again");
+        setPhase("error"); es.close();
+      };
     } catch (err: any) {
       setErrorMsg(err.message ?? "Failed to start analysis");
       setPhase("error");
@@ -916,7 +943,10 @@ function BhagwatEditor({
         setReviewing(false);
         es.close();
       });
-      es.onerror = () => { setReviewing(false); es.close(); };
+      es.onerror = () => {
+        if (es.readyState === EventSource.CONNECTING) return;
+        setReviewing(false); es.close();
+      };
     } catch (err: any) {
       toast({ title: "Review failed", description: err.message, variant: "destructive" });
       setReviewing(false);
@@ -931,6 +961,7 @@ function BhagwatEditor({
     if (renderJobId)  fetch(`${BASE}/api/bhagwat/cancel-render/${renderJobId}`,   { method: "POST" }).catch(() => {});
     setPhase("idle");
     setReviewing(false);
+    setSseReconnecting(false);
     setRenderPercent(0);
     setRenderMessage("");
     setAnalyzeJobId(null);
@@ -965,11 +996,13 @@ function BhagwatEditor({
       esRef.current = es;
 
       es.addEventListener("progress", e => {
+        setSseReconnecting(false);
         const d = JSON.parse(e.data);
         setRenderPercent(d.percent ?? 0);
         setRenderMessage(d.message ?? "");
       });
       es.addEventListener("done", e => {
+        setSseReconnecting(false);
         const d = JSON.parse(e.data);
         setDownloadUrl(`${BASE}${d.downloadUrl}`);
         setDownloadFilename(d.filename ?? "bhagwat_video.mp4");
@@ -977,12 +1010,18 @@ function BhagwatEditor({
         es.close();
       });
       es.addEventListener("jobError", e => {
+        setSseReconnecting(false);
         const d = JSON.parse((e as MessageEvent).data);
         setErrorMsg(d.message ?? "Render failed");
         setPhase("error");
         es.close();
       });
-      es.onerror = () => { setErrorMsg("Connection error during render — please try again"); setPhase("error"); es.close(); };
+      es.onerror = () => {
+        if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+        setSseReconnecting(false);
+        setErrorMsg("Connection error during render — please try again");
+        setPhase("error"); es.close();
+      };
     } catch (err: any) {
       setErrorMsg(err.message ?? "Failed to start render");
       setPhase("error");
@@ -1201,6 +1240,12 @@ function BhagwatEditor({
                 </div>
               );
             })}
+            {sseReconnecting && phase === "analyzing" && (
+              <div className="flex items-center gap-2 pt-1">
+                <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
+                <span className="text-xs text-yellow-400/80">Reconnecting…</span>
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1409,6 +1454,12 @@ function BhagwatEditor({
                 transition={{ duration: 0.5 }}
               />
             </div>
+            {sseReconnecting && (
+              <div className="flex items-center gap-2">
+                <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
+                <span className="text-xs text-yellow-400/80">Reconnecting…</span>
+              </div>
+            )}
             {autoImprovedCount !== null && autoImprovedCount > 0 && (
               <p className="text-xs text-yellow-400/60 text-center flex items-center justify-center gap-1">
                 <Lightbulb className="w-3 h-3" />
