@@ -679,6 +679,8 @@ interface AnalysisJob {
   };
   error?: string;
   createdAt: number;
+  cancelled?: boolean;
+  abort?: () => void;
 }
 const analysisJobs = new Map<string, AnalysisJob>();
 
@@ -758,16 +760,25 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
     res.end();
     return;
   }
-  job.emitter.on("step", (d) => send("step", d));
-  job.emitter.on("done", (d) => {
-    send("done", d);
-    res.end();
+  const onStep = (d: object) => send("step", d);
+  const onDone = (d: object) => { send("done", d); res.end(); };
+  const onErr  = (d: object) => { send("jobError", d); res.end(); };
+  job.emitter.on("step", onStep);
+  job.emitter.on("done", onDone);
+  job.emitter.on("jobError", onErr);
+  req.on("close", () => {
+    job.emitter.off("step", onStep);
+    job.emitter.off("done", onDone);
+    job.emitter.off("jobError", onErr);
   });
-  job.emitter.on("jobError", (d) => {
-    send("jobError", d);
-    res.end();
-  });
-  req.on("close", () => job.emitter.removeAllListeners());
+});
+
+router.post("/bhagwat/cancel-analyze/:jobId", (req: Request, res: Response) => {
+  const job = analysisJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ ok: false }); return; }
+  job.cancelled = true;
+  job.abort?.();
+  res.json({ ok: true });
 });
 
 // ── Plan review ───────────────────────────────────────────────────────────────
@@ -829,16 +840,17 @@ router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
   res.flushHeaders?.();
   const send = (event: string, data: object) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  job.emitter.on("chunk", (d) => send("chunk", d));
-  job.emitter.on("suggestions", (d) => {
-    send("suggestions", d);
-    res.end();
+  const onChunk  = (d: object) => send("chunk", d);
+  const onSugg   = (d: object) => { send("suggestions", d); res.end(); };
+  const onRevErr = (d: object) => { send("jobError", d); res.end(); };
+  job.emitter.on("chunk", onChunk);
+  job.emitter.on("suggestions", onSugg);
+  job.emitter.on("jobError", onRevErr);
+  req.on("close", () => {
+    job.emitter.off("chunk", onChunk);
+    job.emitter.off("suggestions", onSugg);
+    job.emitter.off("jobError", onRevErr);
   });
-  job.emitter.on("jobError", (d) => {
-    send("jobError", d);
-    res.end();
-  });
-  req.on("close", () => job.emitter.removeAllListeners());
 });
 
 async function runBhagwatReview(
@@ -942,6 +954,8 @@ interface RenderJob {
   error?: string;
   createdAt: number;
   deleteScheduled?: boolean;
+  cancelled?: boolean;
+  abort?: () => void;
 }
 const renderJobs = new Map<string, RenderJob>();
 
@@ -1005,16 +1019,25 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     res.end();
     return;
   }
-  job.emitter.on("progress", (d) => send("progress", d));
-  job.emitter.on("done", (d) => {
-    send("done", d);
-    res.end();
+  const onProg    = (d: object) => send("progress", d);
+  const onRenDone = (d: object) => { send("done", d); res.end(); };
+  const onRenErr  = (d: object) => { send("jobError", d); res.end(); };
+  job.emitter.on("progress", onProg);
+  job.emitter.on("done", onRenDone);
+  job.emitter.on("jobError", onRenErr);
+  req.on("close", () => {
+    job.emitter.off("progress", onProg);
+    job.emitter.off("done", onRenDone);
+    job.emitter.off("jobError", onRenErr);
   });
-  job.emitter.on("jobError", (d) => {
-    send("jobError", d);
-    res.end();
-  });
-  req.on("close", () => job.emitter.removeAllListeners());
+});
+
+router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
+  const job = renderJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ ok: false }); return; }
+  job.cancelled = true;
+  job.abort?.();
+  res.json({ ok: true });
 });
 
 const RENDER_DELETE_MS = 10 * 60 * 1000; // 10 minutes after download
@@ -1552,6 +1575,8 @@ async function runBhagwatRender(
       }),
     ]);
 
+    if (job.cancelled) throw new Error("Cancelled by user");
+
     // Trim audio to clip range when editing a specific clip.
     // Always re-encode to aac (-c:a aac) instead of -c:a copy, because YouTube
     // audio is often webm/opus and copying opus into an .aac container causes
@@ -1755,15 +1780,18 @@ async function runBhagwatRender(
 
       // spawnBatch: runs one FFmpeg batch and emits granular within-batch progress.
       // pctStart/pctEnd bracket the portion of the overall 65-90% range this batch owns.
+      // setAbort receives a kill function so the job can be cancelled mid-batch.
       const spawnBatch = (
         bArgs: string[],
         pctStart: number,
         pctEnd: number,
         batchLabel: string,
         segDur: number,
+        setAbort?: (kill: (() => void) | undefined) => void,
       ): Promise<void> =>
         new Promise<void>((resolve, reject) => {
           const ff = spawn("ffmpeg", bArgs);
+          setAbort?.(() => ff.kill("SIGKILL"));
           let stderrBuf = "";
           let tailLines = "";
           const wd = setTimeout(() => {
@@ -1870,7 +1898,12 @@ async function runBhagwatRender(
           );
         }
 
-        await spawnBatch(bArgs, batchPctStart, batchPctEnd, batchLabel, batchDur);
+        if (job.cancelled) throw new Error("Cancelled by user");
+        await spawnBatch(
+          bArgs, batchPctStart, batchPctEnd, batchLabel, batchDur,
+          (kill) => { job.abort = kill; },
+        );
+        job.abort = undefined;
         batchNum++;
         batchStart = batchEnd;
       }
@@ -2020,6 +2053,7 @@ async function runBhagwatRender(
     if (!isVideoOverlayMode) {
       await new Promise<void>((resolve, reject) => {
         const ff = spawn("ffmpeg", ffArgs);
+        job.abort = () => ff.kill("SIGKILL");
         let stderr = "";
         let resolved = false;
 
@@ -2054,6 +2088,7 @@ async function runBhagwatRender(
         ff.on("close", (code) => {
           resolved = true;
           clearTimeout(watchdog);
+          job.abort = undefined;
           if (code === 0) {
             resolve();
           } else {

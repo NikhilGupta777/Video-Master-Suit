@@ -926,6 +926,9 @@ function BhagwatEditor({
   const handleStop = () => {
     esRef.current?.close();
     esRef.current = null;
+    // Fire-and-forget cancel requests to kill FFmpeg/yt-dlp on the server
+    if (analyzeJobId) fetch(`${BASE}/api/bhagwat/cancel-analyze/${analyzeJobId}`, { method: "POST" }).catch(() => {});
+    if (renderJobId)  fetch(`${BASE}/api/bhagwat/cancel-render/${renderJobId}`,   { method: "POST" }).catch(() => {});
     setPhase("idle");
     setReviewing(false);
     setRenderPercent(0);
