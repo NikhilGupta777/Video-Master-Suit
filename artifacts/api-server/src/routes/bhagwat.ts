@@ -1943,7 +1943,7 @@ async function runBhagwatRender(
       ffArgs.push("-i", audioFile);
       ffArgs.push(
         "-vf",
-        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN},fade=t=out:st=${(dur - LAST_FADEOUT).toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}`,
+        `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN.toFixed(3)}:enable='lte(t,${FIRST_FADEIN.toFixed(3)})',fade=t=out:st=${(dur - LAST_FADEOUT).toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}:enable='gte(t,${(dur - LAST_FADEOUT).toFixed(3)})'`,
         "-c:v",
         "libx264",
         "-preset",
@@ -2247,6 +2247,7 @@ async function runBhagwatAnalysisFromFile(
         ff.stdout.on("data", (d: Buffer) => {
           out += d.toString();
         });
+        ff.on("error", reject);
         ff.on("close", (code) =>
           code === 0
             ? resolve(out.trim())
