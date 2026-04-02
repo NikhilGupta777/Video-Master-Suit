@@ -2074,8 +2074,8 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
           reason: c.reason ?? "",
         };
       })
-      // Safety: drop any clip where capping produced endSec <= startSec
-      .filter((clip) => clip.endSec > clip.startSec)
+      // Safety: drop any clip where capping produced endSec <= startSec, or clip is under 30s (hallucination guard)
+      .filter((clip) => clip.endSec > clip.startSec && (clip.endSec - clip.startSec) >= 30)
       .sort((a, b) =>
         a.durationSec !== b.durationSec
           ? a.durationSec - b.durationSec
