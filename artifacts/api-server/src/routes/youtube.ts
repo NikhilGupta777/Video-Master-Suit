@@ -60,6 +60,16 @@ const PYTHON_BIN =
 const YTDLP_COOKIES_FILE =
   process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
 
+// Optional HTTP/SOCKS proxy for yt-dlp (critical for cloud/datacenter IPs blocked by YouTube).
+// Set YTDLP_PROXY=socks5://user:pass@host:port  or  http://host:port
+const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
+
+// Optional po_token + visitor_data pair to bypass YouTube bot-detection on server IPs.
+// Generate with: https://github.com/iv-org/youtube-trusted-session-generator
+// Then set: YTDLP_PO_TOKEN=<token>  and  YTDLP_VISITOR_DATA=<data>
+const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
+const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 if (!existsSync(DOWNLOAD_DIR)) {
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -140,11 +150,11 @@ function pickFirst(value: string | string[] | undefined): string | undefined {
 
 // Base args applied to every yt-dlp call.
 // Keep extractor client selection on yt-dlp defaults for best compatibility.
-const BASE_YTDLP_ARGS = [
+const BASE_YTDLP_ARGS: string[] = [
   // Retry on network errors and rate-limits
-  "--retries", "3",
-  "--fragment-retries", "3",
-  "--extractor-retries", "3",
+  "--retries", "5",
+  "--fragment-retries", "5",
+  "--extractor-retries", "5",
   // Prevent infinite hangs on slow/broken connections
   "--socket-timeout", "30",
   // Browser-like headers to avoid bot detection
@@ -158,7 +168,23 @@ const BASE_YTDLP_ARGS = [
   // Full Chrome-like user agent
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  // Sleep between requests to avoid rate-limit bans
+  "--sleep-requests", "1",
+  "--sleep-interval", "2",
 ];
+
+// Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
+if (YTDLP_PROXY) {
+  BASE_YTDLP_ARGS.push("--proxy", YTDLP_PROXY);
+}
+
+// Inject po_token + visitor_data if configured (bypasses YouTube bot detection on server IPs)
+if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+  BASE_YTDLP_ARGS.push(
+    "--extractor-args",
+    `youtube:po_token=web+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+  );
+}
 
 function getYtdlpCookieArgs(): string[] {
   if (!YTDLP_COOKIES_FILE) return [];
@@ -235,11 +261,15 @@ async function runYtDlp(args: string[]): Promise<string> {
   if (cookieArgs.length) attemptPlans.push(cookieArgs);
 
   // Useful fallback player clients for cloud/server IPs where default web client gets bot-check.
-  // Keep these after default attempt to avoid harming normal cases.
+  // Ordered from most to least likely to work on AWS/datacenter IPs.
   const youtubeFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=ios"],
+    ["--extractor-args", "youtube:player_client=android"],
+    ["--extractor-args", "youtube:player_client=mweb"],
     ["--extractor-args", "youtube:player_client=android,web"],
     ["--extractor-args", "youtube:player_client=android,web_safari"],
     ["--extractor-args", "youtube:player_client=tv_embedded,android"],
+    ["--extractor-args", "youtube:player_client=ios,web"],
   ];
 
   let lastErr: Error | null = null;
