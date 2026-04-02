@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { BestClips } from "@/components/BestClips";
+import { BhavishyaClips } from "@/components/BhavishyaClips";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface TimelineSegment {
@@ -1617,6 +1618,7 @@ export function BhagwatVideos() {
           onEditClip={handleEditClip}
           defaultInstructions="Find all complete devotional stories, Bhagwat Katha narratives, bhajan sequences, Krishna Leela episodes, Ram Katha stories, Mahabharat discussions, and spiritual discourses. Focus on segments that have a clear narrative arc — a complete story, teaching, or devotional moment from start to finish. Also find the best standalone bhajan or kirtan clips."
         />
+        <BhavishyaClips url={url} />
       </div>
     </motion.div>
   );
