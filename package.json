@@ -17,6 +17,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1021.0",
-    "@aws-sdk/client-ssm": "^3.1021.0"
+    "@aws-sdk/client-ec2-instance-connect": "^3.1021.0",
+    "@aws-sdk/client-ssm": "^3.1021.0",
+    "node-ssh": "^13.2.1",
+    "sshpk": "^1.18.0"
   }
 }
