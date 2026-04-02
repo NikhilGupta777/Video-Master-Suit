@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
-  AlertTriangle, Wand2, Timer, Pencil
+  AlertTriangle, Wand2, Timer, Pencil, Swords, Biohazard, Wind, Landmark, X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,75 @@ const DURATION_OPTIONS = [
   { label: "1 min",   value: 60,   color: "from-blue-500/30 to-blue-600/10",    badge: "text-blue-300 border-blue-500/30 bg-blue-500/10",    accent: "border-blue-500/20 bg-blue-500/5"    },
   { label: "3 min",   value: 180,  color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
   { label: "≥ 5 min", value: 9999, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
+];
+
+interface TopicPreset {
+  id: string;
+  Icon: React.ElementType;
+  label: string;
+  labelHindi: string;
+  description: string;
+  accentColor: string;
+  borderColor: string;
+  bgColor: string;
+  glowColor: string;
+  activeBtnClass: string;
+  instructions: string;
+}
+
+const TOPIC_PRESETS: TopicPreset[] = [
+  {
+    id: "war",
+    Icon: Swords,
+    label: "War / World War",
+    labelHindi: "युद्ध / विश्व युद्ध",
+    description: "Nuclear war, India-Pakistan, World War prophecies",
+    accentColor: "text-red-300",
+    borderColor: "border-red-500/40",
+    bgColor: "bg-red-500/10",
+    glowColor: "shadow-[0_0_16px_rgba(239,68,68,0.2)]",
+    activeBtnClass: "bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 shadow-[0_0_18px_rgba(239,68,68,0.3)]",
+    instructions: "Find ONLY segments where the speaker is prophesying about yuddha (war) — World War, nuclear war, Bharat-Pakistan yuddha, America war, Iran war, missile attacks, nuclear bombs, or countries going to war. Include segments with specific war predictions, timeline mentions, or country-specific prophecies. Skip all non-war content.",
+  },
+  {
+    id: "disease",
+    Icon: Biohazard,
+    label: "Diseases / Virus",
+    labelHindi: "रोग / वायरस",
+    description: "64 viruses coming, pandemics, lockdown predictions",
+    accentColor: "text-green-300",
+    borderColor: "border-green-500/40",
+    bgColor: "bg-green-500/10",
+    glowColor: "shadow-[0_0_16px_rgba(34,197,94,0.2)]",
+    activeBtnClass: "bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 shadow-[0_0_18px_rgba(34,197,94,0.3)]",
+    instructions: "Find ONLY segments about rog (disease) or virus prophecy — 64 viruses coming (chaunsath rog/virus), Corona returning, new pandemic diseases spreading, lockdown predictions, mass illness, hospitals overflowing, or any health-related disaster prophecy. Include only clear disease/virus prophecy segments.",
+  },
+  {
+    id: "pralay",
+    Icon: Wind,
+    label: "Khand Pralay",
+    labelHindi: "खंड प्रलय",
+    description: "Unchass vayu, agni vayu, elemental destruction",
+    accentColor: "text-cyan-300",
+    borderColor: "border-cyan-500/40",
+    bgColor: "bg-cyan-500/10",
+    glowColor: "shadow-[0_0_16px_rgba(6,182,212,0.2)]",
+    activeBtnClass: "bg-gradient-to-r from-cyan-600 to-sky-600 hover:from-cyan-500 hover:to-sky-500 shadow-[0_0_18px_rgba(6,182,212,0.3)]",
+    instructions: "Find ONLY segments about khand pralay or natural destruction prophecy — unchass vayu (49 winds/tornadoes), agni vayu (fire wind), panch tattva vinash (destruction by all 5 elements), cyclones, earthquakes, floods, tornado storms, nature's wrath. Include only clear natural calamity prophecy segments.",
+  },
+  {
+    id: "jagannath",
+    Icon: Landmark,
+    label: "Jagannath Puri Signs",
+    labelHindi: "जगन्नाथ पुरी संकेत",
+    description: "Divine signs, omens, celestial signals at Puri",
+    accentColor: "text-yellow-300",
+    borderColor: "border-yellow-500/40",
+    bgColor: "bg-yellow-500/10",
+    glowColor: "shadow-[0_0_16px_rgba(234,179,8,0.2)]",
+    activeBtnClass: "bg-gradient-to-r from-yellow-600 to-amber-600 hover:from-yellow-500 hover:to-amber-500 shadow-[0_0_18px_rgba(234,179,8,0.3)]",
+    instructions: "Find ONLY segments about Jagannath Puri mandir (temple) as a divine sign or omen of coming events. Look for special signs, unusual events or omens at Jagannath Puri, celestial signs near the moon or stars (tara), divine signals indicating upcoming catastrophes, or any prophecy directly referencing Jagannath Puri.",
+  },
 ];
 
 type StepStatus = "idle" | "running" | "done" | "warn" | "error";
@@ -91,6 +160,8 @@ function formatRemaining(remainingSec: number): string {
 export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaultInstructions }: Props, ref: React.ForwardedRef<BestClipsHandle>) {
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
+  const [is8MinMode, setIs8MinMode] = useState(false);
+  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [customInstructions, setCustomInstructions] = useState(defaultInstructions ?? "");
   const [clips, setClips] = useState<BestClip[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -157,8 +228,12 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
 
   useImperativeHandle(ref, () => ({ startAnalyze: handleAnalyze }));
 
+  const activeTopic = TOPIC_PRESETS.find(p => p.id === selectedTopic) ?? null;
+
   async function handleAnalyze() {
-    if (!url.trim() || (!isAutoMode && selectedDurations.length === 0)) return;
+    if (!url.trim()) return;
+    if (!isAutoMode && !is8MinMode && selectedDurations.length === 0) return;
+    if (is8MinMode && !selectedTopic) return;
 
     // Close any previous SSE
     esRef.current?.close();
@@ -182,7 +257,9 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
         body: JSON.stringify(
           isAutoMode
             ? { url: url.trim(), auto: true, instructions: customInstructions.trim() || undefined }
-            : { url: url.trim(), durations: selectedDurations, instructions: customInstructions.trim() || undefined }
+            : is8MinMode && activeTopic
+              ? { url: url.trim(), durations: [480], instructions: activeTopic.instructions }
+              : { url: url.trim(), durations: selectedDurations, instructions: customInstructions.trim() || undefined }
         ),
       });
       const startData = await startRes.json();
@@ -330,71 +407,156 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
           <div className="flex flex-wrap gap-2">
             {/* Auto mode button */}
             <button
-              onClick={() => setIsAutoMode(prev => !prev)}
+              onClick={() => { setIsAutoMode(prev => !prev); setIs8MinMode(false); }}
               className={cn(
                 "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200 flex items-center gap-1.5",
                 isAutoMode
                   ? "bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.25)]"
-                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
+                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20",
+                (is8MinMode) && !isAutoMode && "opacity-30"
               )}
             >
               <Wand2 className="w-3.5 h-3.5" />
               Auto
             </button>
 
-            {/* Manual duration buttons — dimmed when Auto is active */}
+            {/* Manual duration buttons */}
             {DURATION_OPTIONS.map(opt => (
               <button
                 key={opt.value}
                 onClick={() => {
                   setIsAutoMode(false);
+                  setIs8MinMode(false);
                   selectDuration(opt.value);
                 }}
                 className={cn(
                   "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200",
-                  isAutoMode && "opacity-30 cursor-default",
-                  !isAutoMode && selectedDurations.includes(opt.value)
+                  (isAutoMode || is8MinMode) && "opacity-30 cursor-default",
+                  !isAutoMode && !is8MinMode && selectedDurations.includes(opt.value)
                     ? "bg-primary/20 border-primary/50 text-white shadow-[0_0_12px_rgba(229,9,20,0.2)]"
-                    : !isAutoMode
+                    : !isAutoMode && !is8MinMode
                       ? "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
                       : "bg-white/5 border-white/10 text-white/30"
                 )}
               >{opt.label}</button>
             ))}
+
+            {/* 8-10 min topic button */}
+            <button
+              onClick={() => {
+                setIsAutoMode(false);
+                setIs8MinMode(prev => !prev);
+              }}
+              className={cn(
+                "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200 flex items-center gap-1.5",
+                is8MinMode
+                  ? "bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.3)]"
+                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20",
+                isAutoMode && "opacity-30"
+              )}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              8-10 min
+            </button>
           </div>
+
           {isAutoMode && (
             <p className="text-amber-300/70 text-xs flex items-center gap-1.5">
               <Wand2 className="w-3 h-3" />
               AI will decide the best duration for each clip — no presets, full creative control
             </p>
           )}
+
+          {/* 8-min topic dropdown */}
+          <AnimatePresence>
+            {is8MinMode && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <div className="pt-2 space-y-2">
+                  <p className="text-white/50 text-xs font-medium flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-amber-300" />
+                    Select a Bhavishya Malika prophecy topic:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {TOPIC_PRESETS.map((p) => {
+                      const { Icon } = p;
+                      const isActive = selectedTopic === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setSelectedTopic(isActive ? null : p.id)}
+                          disabled={isLoading}
+                          className={cn(
+                            "relative flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all duration-150 group",
+                            isActive
+                              ? cn(p.bgColor, p.borderColor, p.glowColor)
+                              : "bg-white/4 border-white/8 hover:border-white/20 hover:bg-white/7"
+                          )}
+                        >
+                          {isActive && (
+                            <span className="absolute top-2 right-2">
+                              <CheckCircle2 className={cn("w-3 h-3", p.accentColor)} />
+                            </span>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <Icon className={cn("w-3.5 h-3.5 shrink-0", isActive ? p.accentColor : "text-white/40 group-hover:text-white/60")} />
+                            <span className={cn("font-semibold text-xs leading-tight", isActive ? p.accentColor : "text-white/70")}>{p.label}</span>
+                          </div>
+                          <p className={cn("text-[10px] leading-snug pl-0.5", isActive ? "text-white/50" : "text-white/30")}>{p.description}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedTopic && activeTopic && (
+                    <p className={cn("text-xs flex items-center gap-1.5", activeTopic.accentColor)}>
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
+                      AI will find best ~8 min {activeTopic.label} prophecy clip
+                    </p>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-        {/* Custom Instructions Panel */}
-        <div className="space-y-2 pt-2">
-          <label className="text-white/60 text-sm font-medium flex items-center gap-2">
-            <FileText className="w-4 h-4" />
-            AI Instructions (Optional)
-          </label>
-          <textarea
-            value={customInstructions}
-            onChange={(e) => setCustomInstructions(e.target.value)}
-            placeholder="Tell AI what to focus on... e.g. 'Get all clips about war discussions', 'Find all Bhagwat Katha or Krishna Leela stories', 'Extract any devotional or bhakti content', 'Find every discussion about spiritual topics'"
-            className="w-full p-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-primary/50 focus:bg-white/8 transition-colors resize-none"
-            rows={3}
-            disabled={isLoading}
-          />
-          {customInstructions && (
-            <p className="text-white/40 text-xs">Instructions will be used to guide AI analysis</p>
-          )}
-        </div>
+        {/* Custom Instructions Panel — hidden in 8-min mode */}
+        {!is8MinMode && (
+          <div className="space-y-2 pt-2">
+            <label className="text-white/60 text-sm font-medium flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              AI Instructions (Optional)
+            </label>
+            <textarea
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              placeholder="Tell AI what to focus on... e.g. 'Get all clips about war discussions', 'Find all Bhagwat Katha or Krishna Leela stories', 'Extract any devotional or bhakti content', 'Find every discussion about spiritual topics'"
+              className="w-full p-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-primary/50 focus:bg-white/8 transition-colors resize-none"
+              rows={3}
+              disabled={isLoading}
+            />
+            {customInstructions && (
+              <p className="text-white/40 text-xs">Instructions will be used to guide AI analysis</p>
+            )}
+          </div>
+        )}
 
         <Button
           onClick={handleAnalyze}
-          disabled={isLoading || !url.trim() || (!isAutoMode && selectedDurations.length === 0)}
+          disabled={
+            isLoading || !url.trim() ||
+            (!isAutoMode && !is8MinMode && selectedDurations.length === 0) ||
+            (is8MinMode && !selectedTopic)
+          }
           className={cn(
-            "w-full h-12 rounded-xl transition-all duration-300",
-            isAutoMode && !isLoading && "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30"
+            "w-full h-12 rounded-xl transition-all duration-300 text-white",
+            isAutoMode && !isLoading && "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30",
+            is8MinMode && selectedTopic && !isLoading && activeTopic && activeTopic.activeBtnClass,
           )}
           size="lg"
         >
@@ -402,7 +564,11 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
             ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Analyzing video...</span>
             : isAutoMode
               ? <span className="flex items-center gap-2"><Wand2 className="w-4 h-4" />Auto Find Best Clips</span>
-              : <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best Clips</span>
+              : is8MinMode && selectedTopic && activeTopic
+                ? <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best {activeTopic.label} Clip (8-10 min)</span>
+                : is8MinMode
+                  ? <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Select a topic above</span>
+                  : <span className="flex items-center gap-2"><Sparkles className="w-4 h-4" />Find Best Clips</span>
           }
         </Button>
       </div>
