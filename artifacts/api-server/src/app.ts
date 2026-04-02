@@ -1,6 +1,9 @@
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+import { existsSync } from "fs";
+import { join } from "path";
+import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -30,5 +33,29 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+// In production, serve the built frontend static files
+if (process.env["NODE_ENV"] === "production") {
+  const __dirname = fileURLToPath(new URL(".", import.meta.url));
+
+  // STATIC_DIR env var allows overriding the path (useful in Docker)
+  const staticDir =
+    process.env["STATIC_DIR"] ??
+    join(__dirname, "..", "..", "..", "yt-downloader", "dist", "public");
+
+  if (existsSync(staticDir)) {
+    logger.info({ staticDir }, "Serving static frontend files");
+    app.use(express.static(staticDir));
+    // SPA fallback — all unknown routes serve index.html
+    app.get("*", (_req: Request, res: Response) => {
+      res.sendFile(join(staticDir, "index.html"));
+    });
+  } else {
+    logger.warn(
+      { staticDir },
+      "Static dir not found — frontend will not be served. Run the frontend build first.",
+    );
+  }
+}
 
 export default app;
