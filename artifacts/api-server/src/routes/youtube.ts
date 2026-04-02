@@ -950,6 +950,144 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   });
 });
 
+// ─── Subtitle Download ────────────────────────────────────────────────────
+
+function vttToSrt(vtt: string): string {
+  const cleaned = vtt
+    .replace(/^WEBVTT[^\n]*\n*/m, "")
+    .replace(/^(NOTE|STYLE)[^\n]*(\n(?!\n)[^\n]*)*/gm, "");
+
+  let index = 1;
+  const blocks: string[] = [];
+
+  for (const block of cleaned.split(/\n\n+/)) {
+    const lines = block.trim().split("\n");
+    const timeIdx = lines.findIndex((l) => l.includes("-->"));
+    if (timeIdx === -1) continue;
+
+    const timeLine = lines[timeIdx];
+    const parts = timeLine.split("-->");
+    const startRaw = parts[0].trim().split(" ")[0];
+    const endRaw = parts[1].trim().split(" ")[0];
+
+    const toSrtTime = (t: string) => {
+      if (t.split(":").length === 2) t = `00:${t}`;
+      return t.replace(".", ",");
+    };
+
+    const textLines = lines
+      .slice(timeIdx + 1)
+      .map((l) => l.replace(/<[^>]+>/g, "").trim())
+      .filter(Boolean);
+
+    if (textLines.length === 0) continue;
+
+    blocks.push(
+      `${index}\n${toSrtTime(startRaw)} --> ${toSrtTime(endRaw)}\n${textLines.join("\n")}`,
+    );
+    index++;
+  }
+
+  return blocks.join("\n\n");
+}
+
+router.get("/youtube/subtitles", async (req: Request, res: Response) => {
+  const { url, format } = req.query as { url?: string; format?: string };
+
+  if (!url) {
+    res.status(400).json({ error: "url query param is required" });
+    return;
+  }
+
+  const outputFormat = format === "vtt" ? "vtt" : "srt";
+  const subDir = join(DOWNLOAD_DIR, `subs-${randomUUID()}`);
+
+  try {
+    mkdirSync(subDir, { recursive: true });
+    const subBase = join(subDir, "sub");
+
+    let vttContent: string | null = null;
+
+    // Approach 1: dump-json to get subtitle URL directly (faster, no extra yt-dlp download)
+    try {
+      const metaJson = await runYtDlp([
+        "--dump-json",
+        "--no-playlist",
+        "--no-warnings",
+        url,
+      ]);
+      const meta = JSON.parse(metaJson);
+      const subs: Record<string, any[]> = meta.subtitles ?? {};
+      const autoCaps: Record<string, any[]> = meta.automatic_captions ?? {};
+      const directUrl = pickBestSubtitleUrl(subs, autoCaps, meta.language);
+      if (directUrl) {
+        const raw = await fetchUrl(directUrl);
+        if (raw.includes("WEBVTT") || raw.includes("-->")) vttContent = raw;
+      }
+    } catch (_e) {}
+
+    // Approach 2: yt-dlp write-subs
+    if (!vttContent) {
+      await runYtDlpForSubs([
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-lang", "hi.*,en.*",
+        "--sub-format", "vtt",
+        "--skip-download",
+        "--no-warnings",
+        "--no-playlist",
+        "-o", subBase,
+        url,
+      ]).catch(() => {});
+
+      if (!existsSync(subDir) || !readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
+        await runYtDlpForSubs([
+          "--write-subs",
+          "--write-auto-subs",
+          "--sub-format", "vtt",
+          "--skip-download",
+          "--no-warnings",
+          "--no-playlist",
+          "-o", subBase,
+          url,
+        ]).catch(() => {});
+      }
+
+      if (existsSync(subDir)) {
+        const files = readdirSync(subDir);
+        const vttFile = files.map((f) => join(subDir, f)).find((f) => f.endsWith(".vtt"));
+        if (vttFile) vttContent = readFileSync(vttFile, "utf8");
+      }
+    }
+
+    if (!vttContent) {
+      res.status(404).json({ error: "No subtitles found for this video" });
+      return;
+    }
+
+    const content = outputFormat === "vtt" ? vttContent : vttToSrt(vttContent);
+    const filename = `subtitles.${outputFormat}`;
+    const contentType = outputFormat === "vtt" ? "text/vtt" : "application/x-subrip";
+
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", `${contentType}; charset=utf-8`);
+    res.send(content);
+  } catch (err: any) {
+    req.log.error({ err }, "Failed to fetch subtitles");
+    if (!res.headersSent)
+      res.status(500).json({ error: err.message || "Failed to fetch subtitles" });
+  } finally {
+    try {
+      if (existsSync(subDir)) {
+        for (const f of readdirSync(subDir)) {
+          try { unlinkSync(join(subDir, f)); } catch {}
+        }
+        rmdirSync(subDir);
+      }
+    } catch {}
+  }
+});
+
 // ─── Best Clips Feature (streaming with SSE) ──────────────────────────────
 
 // Replit integration: gemini-3.1-pro-preview  →  own key fallback: gemini-2.5-pro

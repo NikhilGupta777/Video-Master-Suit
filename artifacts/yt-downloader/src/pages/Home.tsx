@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Scissors, Sparkles, Lock
+  Download, Loader2, Scissors, Sparkles, Lock, Captions
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -332,6 +332,7 @@ export default function Home() {
                           />
                         ))}
                       </div>
+                      <SubtitleDownloadRow url={submittedUrl} />
                     </div>
                   )}
 
@@ -455,6 +456,34 @@ function FormatCard({
           )}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function SubtitleDownloadRow({ url }: { url: string }) {
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const encoded = encodeURIComponent(url);
+
+  return (
+    <div className="flex items-center gap-3 px-1 pt-1">
+      <Captions className="w-4 h-4 text-white/40 shrink-0" />
+      <span className="text-sm text-white/40 shrink-0">Subtitles</span>
+      <a
+        href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=srt`}
+        download="subtitles.srt"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
+      >
+        <Download className="w-3 h-3" />
+        SRT
+      </a>
+      <a
+        href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=vtt`}
+        download="subtitles.vtt"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
+      >
+        <Download className="w-3 h-3" />
+        VTT
+      </a>
     </div>
   );
 }
