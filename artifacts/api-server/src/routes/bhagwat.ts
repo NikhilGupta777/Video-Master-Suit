@@ -52,6 +52,8 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 }
 
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
+const PYTHON_BIN =
+  process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 const BHAGWAT_RENDERED_DIR = join(DOWNLOAD_DIR, "bhagwat_rendered");
@@ -140,6 +142,10 @@ interface UploadedAudio {
   createdAt: number;
 }
 const uploadedAudios = new Map<string, UploadedAudio>();
+
+function pickFirst(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 // Sweep old uploads after 2 hours
 setInterval(
@@ -445,11 +451,9 @@ async function generateAllSegmentImages(
   return imagePaths;
 }
 
-// Base args: mweb is most reliable from cloud IPs in 2026; tv_embedded/android/ios are fallbacks.
-// Includes retry logic, socket timeout, and full browser headers to bypass bot detection.
+// Base args with retry logic, socket timeout, and browser headers.
+// Keep extractor client selection on yt-dlp defaults for compatibility.
 const YTDLP_BASE_ARGS = [
-  "--extractor-args",
-  "youtube:player_client=mweb,web,tv_embedded,android,ios",
   "--retries",
   "3",
   "--fragment-retries",
@@ -469,10 +473,8 @@ const YTDLP_BASE_ARGS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
-// Subtitle-safe args: use mweb/android only (no tv_embedded — it breaks subtitle fetching)
+// Subtitle args with default client selection.
 const YTDLP_SUBS_ARGS = [
-  "--extractor-args",
-  "youtube:player_client=mweb,android,ios",
   "--retries",
   "3",
   "--extractor-retries",
@@ -494,13 +496,9 @@ function runYtDlp(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "",
       err = "";
-    const proc = spawn(
-      "python3",
-      ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args],
-      {
-        env: PYTHON_ENV,
-      },
-    );
+    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args], {
+      env: PYTHON_ENV,
+    });
     proc.stdout.on("data", (d) => {
       out += d.toString();
     });
@@ -519,13 +517,9 @@ function runYtDlpForSubs(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "",
       err = "";
-    const proc = spawn(
-      "python3",
-      ["-m", "yt_dlp", ...YTDLP_SUBS_ARGS, ...args],
-      {
-        env: PYTHON_ENV,
-      },
-    );
+    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...YTDLP_SUBS_ARGS, ...args], {
+      env: PYTHON_ENV,
+    });
     proc.stdout.on("data", (d) => {
       out += d.toString();
     });
@@ -747,7 +741,12 @@ router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
 });
 
 router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
-  const job = analysisJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = analysisJobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -782,7 +781,12 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
 });
 
 router.post("/bhagwat/cancel-analyze/:jobId", (req: Request, res: Response) => {
-  const job = analysisJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ ok: false });
+    return;
+  }
+  const job = analysisJobs.get(jobId);
   if (!job) { res.status(404).json({ ok: false }); return; }
   job.cancelled = true;
   job.abort?.();
@@ -837,7 +841,12 @@ router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
 });
 
 router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
-  const job = reviewJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = reviewJobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1003,7 +1012,12 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
 });
 
 router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
-  const job = renderJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = renderJobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1016,7 +1030,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   if (job.status === "done") {
     send("done", {
-      downloadUrl: `/api/bhagwat/download/${req.params.jobId}`,
+      downloadUrl: `/api/bhagwat/download/${jobId}`,
       filename: job.filename,
     });
     res.end();
@@ -1041,7 +1055,12 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
 });
 
 router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
-  const job = renderJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ ok: false });
+    return;
+  }
+  const job = renderJobs.get(jobId);
   if (!job) { res.status(404).json({ ok: false }); return; }
   job.cancelled = true;
   job.abort?.();
@@ -1051,7 +1070,12 @@ router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
 const RENDER_DELETE_MS = 10 * 60 * 1000; // 10 minutes after download
 
 router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
-  const job = renderJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = renderJobs.get(jobId);
   if (!job?.outputPath || !existsSync(job.outputPath)) {
     res.status(404).json({ error: "File not ready or already deleted" });
     return;
@@ -1067,7 +1091,7 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
       } catch {}
       job.outputPath = undefined;
       job.status = "expired";
-      setTimeout(() => renderJobs.delete(req.params.jobId), 60_000);
+      setTimeout(() => renderJobs.delete(jobId), 60_000);
     }, RENDER_DELETE_MS);
   }
 });
@@ -2516,7 +2540,12 @@ router.post("/bhagwat/upload-audio", (req: Request, res: Response) => {
 
 // Delete uploaded audio
 router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
-  const audio = uploadedAudios.get(req.params.audioId);
+  const audioId = pickFirst(req.params.audioId);
+  if (!audioId) {
+    res.status(400).json({ error: "audioId is required" });
+    return;
+  }
+  const audio = uploadedAudios.get(audioId);
   if (!audio) {
     res.status(404).json({ error: "Audio not found" });
     return;
@@ -2524,7 +2553,7 @@ router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
   try {
     unlinkSync(audio.path);
   } catch {}
-  uploadedAudios.delete(req.params.audioId);
+  uploadedAudios.delete(audioId);
   res.json({ ok: true });
 });
 

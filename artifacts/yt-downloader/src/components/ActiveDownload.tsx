@@ -22,6 +22,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
 
   const { data: progress } = useGetDownloadProgress(jobId, {
     query: {
+      queryKey: ["download-progress", jobId],
       enabled: !!jobId,
       refetchInterval: (query) => {
         const status = query.state.data?.status;

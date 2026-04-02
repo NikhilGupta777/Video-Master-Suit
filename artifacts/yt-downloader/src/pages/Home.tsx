@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Scissors, Sparkles, Lock, Captions
+  Download, Loader2, Sparkles, Lock, Captions
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -16,6 +16,32 @@ import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhagwatVideos } from "@/components/BhagwatVideos";
 
 type Mode = "download" | "clips" | "bhagwat";
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "data" in error &&
+    typeof (error as { data?: unknown }).data === "object" &&
+    (error as { data?: { error?: unknown } }).data !== null
+  ) {
+    const maybeMessage = (error as { data?: { error?: unknown } }).data?.error;
+    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+      return maybeMessage;
+    }
+  }
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+
+  return fallback;
+}
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -39,7 +65,10 @@ export default function Home() {
       onError: (error) => {
         toast({
           title: "Couldn't fetch video",
-          description: error.error?.error || "Please check the URL and try again.",
+          description: getApiErrorMessage(
+            error,
+            "Please check the URL and try again.",
+          ),
           variant: "destructive",
         });
       }
@@ -54,7 +83,10 @@ export default function Home() {
       onError: (error) => {
         toast({
           title: "Download Failed",
-          description: error.error?.error || "Could not start the download process.",
+          description: getApiErrorMessage(
+            error,
+            "Could not start the download process.",
+          ),
           variant: "destructive",
         });
         setActiveFormatId(null);
@@ -220,7 +252,6 @@ export default function Home() {
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 sm:gap-2">
-                    {mode === "clips" ? <Scissors className="w-4 h-4" /> : null}
                     {buttonPlaceholder} <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </span>
                 )}

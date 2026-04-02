@@ -55,6 +55,10 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 }
 
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
+const PYTHON_BIN =
+  process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+const YTDLP_COOKIES_FILE =
+  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 if (!existsSync(DOWNLOAD_DIR)) {
@@ -130,12 +134,13 @@ interface DownloadJob {
 
 const jobs = new Map<string, DownloadJob>();
 
+function pickFirst(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 // Base args applied to every yt-dlp call.
-// Client priority: mweb is most reliable from cloud IPs in 2026; tv_embedded/android/ios
-// are fallbacks. The web client with proper headers is tried first for format resolution.
+// Keep extractor client selection on yt-dlp defaults for best compatibility.
 const BASE_YTDLP_ARGS = [
-  "--extractor-args",
-  "youtube:player_client=mweb,web,tv_embedded,android,ios",
   // Retry on network errors and rate-limits
   "--retries", "3",
   "--fragment-retries", "3",
@@ -155,11 +160,33 @@ const BASE_YTDLP_ARGS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
-function runYtDlp(args: string[]): Promise<string> {
+function getYtdlpCookieArgs(): string[] {
+  if (!YTDLP_COOKIES_FILE) return [];
+  return existsSync(YTDLP_COOKIES_FILE)
+    ? ["--cookies", YTDLP_COOKIES_FILE]
+    : [];
+}
+
+function isYouTubeUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeBlockedError(message: string): boolean {
+  return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(
+    message,
+  );
+}
+
+function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(
-      "python3",
-      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
+      PYTHON_BIN,
+      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...args],
       {
         env: PYTHON_ENV,
       },
@@ -183,6 +210,67 @@ function runYtDlp(args: string[]): Promise<string> {
       reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
     );
   });
+}
+
+async function runYtDlp(args: string[]): Promise<string> {
+  const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
+  const cookieArgs = getYtdlpCookieArgs();
+
+  const attemptPlans: string[][] = [[]];
+  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+
+  // Useful fallback player clients for cloud/server IPs where default web client gets bot-check.
+  // Keep these after default attempt to avoid harming normal cases.
+  const youtubeFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=android,web"],
+    ["--extractor-args", "youtube:player_client=android,web_safari"],
+    ["--extractor-args", "youtube:player_client=tv_embedded,android"],
+  ];
+
+  let lastErr: Error | null = null;
+  const attempted = new Set<string>();
+
+  for (const extra of attemptPlans) {
+    const key = extra.join("\u0001");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try {
+      return await runYtDlpOnce(extra, args);
+    } catch (err) {
+      lastErr =
+        err instanceof Error ? err : new Error("yt-dlp failed unexpectedly");
+      // If this is not a YouTube block scenario, fail fast.
+      if (
+        !maybeUrl ||
+        !isYouTubeUrl(maybeUrl) ||
+        !isYouTubeBlockedError(lastErr.message)
+      ) {
+        throw lastErr;
+      }
+    }
+  }
+
+  // Only try extractor fallback strategies if we are in a YouTube block scenario.
+  if (maybeUrl && isYouTubeUrl(maybeUrl) && lastErr) {
+    for (const fallback of youtubeFallbacks) {
+      const plans = cookieArgs.length
+        ? [[...cookieArgs, ...fallback], fallback]
+        : [fallback];
+      for (const extra of plans) {
+        const key = extra.join("\u0001");
+        if (attempted.has(key)) continue;
+        attempted.add(key);
+        try {
+          return await runYtDlpOnce(extra, args);
+        } catch (err) {
+          lastErr =
+            err instanceof Error ? err : new Error("yt-dlp fallback failed");
+        }
+      }
+    }
+  }
+
+  throw lastErr ?? new Error("yt-dlp failed");
 }
 
 // Fetch a URL and return its body as a string
@@ -280,11 +368,9 @@ function pickBestSubtitleUrl(
   return null;
 }
 
-// Subtitle-safe yt-dlp args: use mweb/android clients (no tv_embedded — it breaks sub fetching)
-// but still include all anti-bot headers and retry/timeout settings.
+// Subtitle-safe yt-dlp args with default client selection and anti-bot
+// headers/retry settings.
 const SUBS_YTDLP_ARGS = [
-  "--extractor-args",
-  "youtube:player_client=mweb,android,ios",
   "--retries", "3",
   "--extractor-retries", "3",
   "--socket-timeout", "30",
@@ -300,10 +386,15 @@ const SUBS_YTDLP_ARGS = [
 
 // Run yt-dlp for subtitle-only fetches (uses mweb/android — tv_embedded breaks subs)
 function runYtDlpForSubs(args: string[]): Promise<void> {
+  const cookieArgs = getYtdlpCookieArgs();
   return new Promise((resolve, reject) => {
-    const proc = spawn("python3", ["-m", "yt_dlp", ...SUBS_YTDLP_ARGS, ...args], {
-      env: PYTHON_ENV,
-    });
+    const proc = spawn(
+      PYTHON_BIN,
+      ["-m", "yt_dlp", ...SUBS_YTDLP_ARGS, ...cookieArgs, ...args],
+      {
+        env: PYTHON_ENV,
+      },
+    );
     let stderr = "";
     proc.stderr?.on("data", (d) => {
       stderr += d.toString();
@@ -632,13 +723,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   args.push("-o", outputPath, job.url);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn(
-      "python3",
-      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
-      {
-        env: PYTHON_ENV,
-      },
-    );
+    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
+      env: PYTHON_ENV,
+    });
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -767,7 +854,11 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 }
 
 router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
-  const { jobId } = req.params;
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
   const job = jobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
@@ -911,7 +1002,11 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
 });
 
 router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
-  const { jobId } = req.params;
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
   const job = jobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found", expired: true });
@@ -1238,7 +1333,7 @@ ${inputTranscript}`;
         const audioPattern = join(audioDir, "audio.%(ext)s");
 
         await new Promise<void>((resolve, reject) => {
-          const proc = spawn("python3", [
+          const proc = spawn(PYTHON_BIN, [
             "-m", "yt_dlp",
             "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
             "--no-playlist", "--no-warnings",
@@ -1575,6 +1670,13 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
     auto?: boolean;
     instructions?: string;
   };
+  const normalizedDurations = Array.isArray(durations)
+    ? durations
+        .map((duration) => Number(duration))
+        .filter((duration) => Number.isFinite(duration))
+    : [];
+  const normalizedInstructions =
+    typeof instructions === "string" ? instructions : undefined;
   if (!url) {
     res.status(400).json({ error: "URL is required" });
     return;
@@ -1602,16 +1704,21 @@ router.post("/youtube/clips", async (req: Request, res: Response) => {
     jobId,
     job,
     url,
-    durations ?? [],
+    normalizedDurations,
     req.log,
     auto ?? false,
-    instructions ?? undefined,
+    normalizedInstructions,
   ).catch(() => {});
 });
 
 // GET: SSE stream for a clip job
 router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
-  const job = clipJobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = clipJobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -2175,13 +2282,9 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   ];
 
   new Promise<void>((resolve, reject) => {
-    const proc = spawn(
-      "python3",
-      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args],
-      {
-        env: PYTHON_ENV,
-      },
-    );
+    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
+      env: PYTHON_ENV,
+    });
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
