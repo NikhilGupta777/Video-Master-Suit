@@ -162,9 +162,24 @@ const BASE_YTDLP_ARGS = [
 
 function getYtdlpCookieArgs(): string[] {
   if (!YTDLP_COOKIES_FILE) return [];
-  return existsSync(YTDLP_COOKIES_FILE)
-    ? ["--cookies", YTDLP_COOKIES_FILE]
-    : [];
+  if (!existsSync(YTDLP_COOKIES_FILE)) return [];
+  try {
+    const stat = statSync(YTDLP_COOKIES_FILE);
+    if (!stat.isFile() || stat.size < 24) return [];
+    const header = readFileSync(YTDLP_COOKIES_FILE, "utf8")
+      .slice(0, 256)
+      .trimStart();
+    // yt-dlp expects Netscape cookie format; ignore placeholder/invalid files.
+    if (
+      !header.startsWith("# Netscape HTTP Cookie File") &&
+      !header.startsWith(".youtube.com")
+    ) {
+      return [];
+    }
+    return ["--cookies", YTDLP_COOKIES_FILE];
+  } catch {
+    return [];
+  }
 }
 
 function isYouTubeUrl(url: string): boolean {

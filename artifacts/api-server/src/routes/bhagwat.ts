@@ -208,6 +208,26 @@ function extractImageBytes(response: any): Buffer {
   return Buffer.from(imagePart.inlineData.data, "base64");
 }
 
+const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS ?? 20_000);
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return (await Promise.race([promise, timeoutPromise])) as T;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function generateImageViaReplit(prompt: string, model = "gemini-2.5-flash-image"): Promise<Buffer> {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
@@ -253,7 +273,11 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
   // 1. Try Replit integration: fast flash model
   if (replitReady) {
     try {
-      const bytes = await generateImageViaReplit(prompt, "gemini-2.5-flash-image");
+      const bytes = await withTimeout(
+        generateImageViaReplit(prompt, "gemini-2.5-flash-image"),
+        IMAGE_GEN_TIMEOUT_MS,
+        "Replit flash image generation",
+      );
       writeFileSync(outputPath, bytes);
       return;
     } catch (err) {
@@ -266,7 +290,11 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
     // 1b. Brief pause then try the Replit pro image model
     await new Promise((r) => setTimeout(r, 1500));
     try {
-      const bytes = await generateImageViaReplit(prompt, "gemini-3-pro-image-preview");
+      const bytes = await withTimeout(
+        generateImageViaReplit(prompt, "gemini-3-pro-image-preview"),
+        IMAGE_GEN_TIMEOUT_MS,
+        "Replit pro image generation",
+      );
       writeFileSync(outputPath, bytes);
       return;
     } catch (err) {
@@ -278,7 +306,11 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
   }
 
   // 2. Final fallback: own GEMINI_API_KEY
-  const bytes = await generateImageViaOwnKey(prompt);
+  const bytes = await withTimeout(
+    generateImageViaOwnKey(prompt),
+    IMAGE_GEN_TIMEOUT_MS,
+    "Gemini image generation",
+  );
   writeFileSync(outputPath, bytes);
 }
 
@@ -411,6 +443,12 @@ async function generateAllSegmentImages(
             `[bhagwat/render] Image gen failed (seg ${task.segIdx}/${task.imgIdx}):`,
             errMsg,
           );
+          // If the primary attempt timed out, skip fallback to avoid multi-minute hangs.
+          if (/timed out/i.test(errMsg)) {
+            done++;
+            onProgress(done, total, `${segments[task.segIdx].description} (image timeout, skipped)`);
+            return;
+          }
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. MUST be photorealistic — no abstract, digital, animated, or illustrated styles`;
           try {
@@ -1653,11 +1691,45 @@ async function runBhagwatRender(
       audioFile = trimmedPath;
     }
 
-    const totalGenerated = imagePaths
+    let totalGenerated = imagePaths
       .flat()
       .filter((p) => p && existsSync(p)).length;
-    if (totalGenerated === 0)
-      throw new Error("Image generation failed — no images were created");
+    if (totalGenerated === 0) {
+      emit("progress", {
+        percent: 60,
+        message: "AI image generation unavailable. Using fallback visuals…",
+      });
+      const fallbackPath = join(imgDir, "fallback.png");
+      await new Promise<void>((resolve, reject) => {
+        const ff = spawn("ffmpeg", [
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=0x111111:s=1920x1080",
+          "-frames:v",
+          "1",
+          "-y",
+          fallbackPath,
+        ]);
+        let stderr = "";
+        ff.stderr?.on("data", (d: Buffer) => {
+          stderr += d.toString();
+        });
+        ff.on("close", (code) => {
+          if (code === 0 && existsSync(fallbackPath)) resolve();
+          else
+            reject(
+              new Error(
+                `Image generation failed and fallback frame creation failed (${code}): ${stderr.slice(-260)}`,
+              ),
+            );
+        });
+        ff.on("error", (err) => reject(err));
+      });
+
+      imagePaths = timeline.map(() => [fallbackPath]);
+      totalGenerated = timeline.length;
+    }
 
     emit("progress", {
       percent: 62,
