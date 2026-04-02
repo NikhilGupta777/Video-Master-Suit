@@ -952,29 +952,59 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
 
 // ─── Subtitle Download ────────────────────────────────────────────────────
 
+/** Parse a VTT timestamp (HH:MM:SS.mmm or MM:SS.mmm) into milliseconds */
+function vttTimeToMs(t: string): number {
+  const parts = t.trim().split(":");
+  if (parts.length === 2) parts.unshift("00"); // MM:SS.mmm
+  const [h, m, s] = parts;
+  const [sec, ms = "0"] = s.split(".");
+  return (
+    parseInt(h, 10) * 3600000 +
+    parseInt(m, 10) * 60000 +
+    parseInt(sec, 10) * 1000 +
+    parseInt(ms.padEnd(3, "0"), 10)
+  );
+}
+
+/** Format milliseconds as HH:MM:SS,mmm (SRT format) */
+function msToSrtTime(ms: number): string {
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const f = ms % 1000;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(f).padStart(3, "0")}`;
+}
+
 function vttToSrt(vtt: string): string {
+  // Remove WEBVTT header and any NOTE/STYLE/Kind/Language metadata lines
   const cleaned = vtt
-    .replace(/^WEBVTT[^\n]*\n*/m, "")
-    .replace(/^(NOTE|STYLE)[^\n]*(\n(?!\n)[^\n]*)*/gm, "");
+    .replace(/^WEBVTT[^\n]*/m, "")
+    .replace(/^(NOTE|STYLE|Kind|Language)[^\n]*(\n(?!\n)[^\n]*)*/gm, "")
+    .trim();
+
+  const MIN_DURATION_MS = 50; // skip YouTube's 10ms "reset" blocks
 
   let index = 1;
   const blocks: string[] = [];
+  let prevTextLine = "";
 
   for (const block of cleaned.split(/\n\n+/)) {
     const lines = block.trim().split("\n");
     const timeIdx = lines.findIndex((l) => l.includes("-->"));
     if (timeIdx === -1) continue;
 
+    // Parse timestamps — take only the first token before any VTT cue settings
     const timeLine = lines[timeIdx];
-    const parts = timeLine.split("-->");
-    const startRaw = parts[0].trim().split(" ")[0];
-    const endRaw = parts[1].trim().split(" ")[0];
+    const arrowIdx = timeLine.indexOf("-->");
+    const startRaw = timeLine.slice(0, arrowIdx).trim().split(/\s/)[0];
+    const endRaw   = timeLine.slice(arrowIdx + 3).trim().split(/\s/)[0];
 
-    const toSrtTime = (t: string) => {
-      if (t.split(":").length === 2) t = `00:${t}`;
-      return t.replace(".", ",");
-    };
+    // Skip very short "reset" blocks (YouTube word-timing artifact)
+    const startMs = vttTimeToMs(startRaw);
+    const endMs   = vttTimeToMs(endRaw);
+    if (endMs - startMs < MIN_DURATION_MS) continue;
 
+    // Strip all inline timing/formatting tags (<00:00:00.000>, <c>, </c>, etc.)
     const textLines = lines
       .slice(timeIdx + 1)
       .map((l) => l.replace(/<[^>]+>/g, "").trim())
@@ -982,8 +1012,21 @@ function vttToSrt(vtt: string): string {
 
     if (textLines.length === 0) continue;
 
+    // YouTube word-level VTT duplicates the previous line at the top of the next block.
+    // Detect and drop it: if the first line is identical to the last emitted line, skip it.
+    let newLines = textLines;
+    if (textLines.length > 1 && textLines[0] === prevTextLine) {
+      newLines = textLines.slice(1);
+    }
+    if (newLines.length === 0) continue;
+
+    // If we still have multi-line carry-over, take only the last non-duplicate line as new content
+    // (handles cases where multiple carry-over lines accumulate)
+    const lastNew = newLines[newLines.length - 1];
+    prevTextLine = lastNew;
+
     blocks.push(
-      `${index}\n${toSrtTime(startRaw)} --> ${toSrtTime(endRaw)}\n${textLines.join("\n")}`,
+      `${index}\n${msToSrtTime(startMs)} --> ${msToSrtTime(endMs)}\n${newLines.join("\n")}`,
     );
     index++;
   }
