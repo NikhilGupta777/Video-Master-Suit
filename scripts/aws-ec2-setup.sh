@@ -73,16 +73,20 @@ if [ ! -f ".env" ]; then
 fi
 
 echo "=== [6/6] Building and starting the app ==="
-docker compose up -d --build
+# Use sudo because the docker group change from step 2 doesn't apply
+# to the current shell session without logging out first.
+sudo docker compose up -d --build
 
 echo ""
 echo "✅ Done! YTGrabber is running."
 echo ""
 echo "   App URL:  http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080"
-echo "   Logs:     docker compose logs -f"
-echo "   Stop:     docker compose down"
-echo "   Restart:  docker compose restart"
+echo "   Logs:     sudo docker compose logs -f"
+echo "   Stop:     sudo docker compose down"
+echo "   Restart:  sudo docker compose restart"
 echo ""
 echo "   To push database schema (first time / after schema changes):"
-echo "   docker compose exec app pnpm --filter @workspace/db run push"
+echo "   sudo docker compose exec app pnpm --filter @workspace/db run push"
+echo ""
+echo "   Tip: log out and back in so future docker commands work without sudo."
 echo ""

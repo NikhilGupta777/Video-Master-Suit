@@ -30,8 +30,8 @@ WORKDIR /app
 COPY . .
 
 # ── Install Node.js dependencies ──────────────────────────────────────────────
-# --ignore-scripts skips postinstall uv sync (Python already handled above)
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# Note: postinstall runs "uv sync || true" — safe to run, won't fail without uv
+RUN pnpm install --frozen-lockfile
 
 # ── Build frontend ────────────────────────────────────────────────────────────
 RUN pnpm --filter @workspace/yt-downloader run build
