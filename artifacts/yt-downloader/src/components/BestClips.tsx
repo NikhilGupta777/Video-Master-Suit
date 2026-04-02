@@ -54,7 +54,7 @@ const TOPIC_PRESETS: TopicPreset[] = [
     bgColor: "bg-red-500/10",
     glowColor: "shadow-[0_0_16px_rgba(239,68,68,0.2)]",
     activeBtnClass: "bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 shadow-[0_0_18px_rgba(239,68,68,0.3)]",
-    instructions: "Find ONLY segments where the speaker is prophesying about yuddha (war) — World War, nuclear war, Bharat-Pakistan yuddha, America war, Iran war, missile attacks, nuclear bombs, or countries going to war. Include segments with specific war predictions, timeline mentions, or country-specific prophecies. Skip all non-war content.",
+    instructions: "This is a Bhavishya Malika prophecy video. PRIORITY TOPIC: Find the best segment(s) where the speaker talks about yuddha (war) prophecy — this includes World War, nuclear war, Bharat-Pakistan war, America war, Iran war, missile attacks, nuclear bombs, war between countries, or any bhavishya (future prediction) about war. The speaker may use Hindi words like yuddha, ladai, Vishwa Yuddha, parmanu bomb, or missile. Strongly prefer segments that have specific war predictions. Return the best matching clips even if the war discussion is mixed with other topics.",
   },
   {
     id: "disease",
@@ -67,7 +67,7 @@ const TOPIC_PRESETS: TopicPreset[] = [
     bgColor: "bg-green-500/10",
     glowColor: "shadow-[0_0_16px_rgba(34,197,94,0.2)]",
     activeBtnClass: "bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 shadow-[0_0_18px_rgba(34,197,94,0.3)]",
-    instructions: "Find ONLY segments about rog (disease) or virus prophecy — 64 viruses coming (chaunsath rog/virus), Corona returning, new pandemic diseases spreading, lockdown predictions, mass illness, hospitals overflowing, or any health-related disaster prophecy. Include only clear disease/virus prophecy segments.",
+    instructions: "This is a Bhavishya Malika prophecy video. PRIORITY TOPIC: Find the best segment(s) where the speaker talks about rog (disease) or virus prophecy — this includes 64 viruses coming (chaunsath rog or chaunsath virus), Corona returning, new pandemics, mass illness spreading, lockdown predictions, hospitals overflowing, or any bhavishya (future prediction) about disease. The speaker may use Hindi words like rog, bimari, virus, mahamari, lockdown. Return the best matching clips even if the disease discussion is mixed with other topics.",
   },
   {
     id: "pralay",
@@ -80,7 +80,7 @@ const TOPIC_PRESETS: TopicPreset[] = [
     bgColor: "bg-cyan-500/10",
     glowColor: "shadow-[0_0_16px_rgba(6,182,212,0.2)]",
     activeBtnClass: "bg-gradient-to-r from-cyan-600 to-sky-600 hover:from-cyan-500 hover:to-sky-500 shadow-[0_0_18px_rgba(6,182,212,0.3)]",
-    instructions: "Find ONLY segments about khand pralay or natural destruction prophecy — unchass vayu (49 winds/tornadoes), agni vayu (fire wind), panch tattva vinash (destruction by all 5 elements), cyclones, earthquakes, floods, tornado storms, nature's wrath. Include only clear natural calamity prophecy segments.",
+    instructions: "This is a Bhavishya Malika prophecy video. PRIORITY TOPIC: Find the best segment(s) where the speaker talks about khand pralay or natural destruction prophecy — this includes unchass vayu (49 winds or 49 tornadoes), agni vayu (fire wind), panch tattva vinash (destruction by 5 elements), cyclones, earthquakes, floods, storms destroying the earth, or any bhavishya (future prediction) about natural disasters. The speaker may use Hindi words like pralay, khand pralay, vayu, agni, jal pralay, bhu-dol. Return the best matching clips even if the pralay discussion is mixed with other topics.",
   },
   {
     id: "jagannath",
@@ -93,7 +93,7 @@ const TOPIC_PRESETS: TopicPreset[] = [
     bgColor: "bg-yellow-500/10",
     glowColor: "shadow-[0_0_16px_rgba(234,179,8,0.2)]",
     activeBtnClass: "bg-gradient-to-r from-yellow-600 to-amber-600 hover:from-yellow-500 hover:to-amber-500 shadow-[0_0_18px_rgba(234,179,8,0.3)]",
-    instructions: "Find ONLY segments about Jagannath Puri mandir (temple) as a divine sign or omen of coming events. Look for special signs, unusual events or omens at Jagannath Puri, celestial signs near the moon or stars (tara), divine signals indicating upcoming catastrophes, or any prophecy directly referencing Jagannath Puri.",
+    instructions: "This is a Bhavishya Malika prophecy video. PRIORITY TOPIC: Find the best segment(s) where the speaker mentions Jagannath Puri as a divine sign or omen — this includes special signs at Jagannath Puri mandir, celestial signs (moon, stars, tara) near the temple, omens of coming events, unusual happenings at Puri, or any bhavishya (future prediction) directly referencing Jagannath Puri. Return the best matching clips. If Jagannath Puri is not mentioned specifically, return the most spiritually significant prophecy segment from the video.",
   },
 ];
 
@@ -258,7 +258,7 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
           isAutoMode
             ? { url: url.trim(), auto: true, instructions: customInstructions.trim() || undefined }
             : is8MinMode && activeTopic
-              ? { url: url.trim(), durations: [480], instructions: activeTopic.instructions }
+              ? { url: url.trim(), auto: true, instructions: `${activeTopic.instructions}\n\nCLIP LENGTH: The clip should be approximately 8-10 minutes long (480-600 seconds). Find the single best segment matching the topic above that is closest to this length. If the best matching segment is slightly shorter or longer (6-12 min), that is fine — content quality and topic match matter more than exact length.` }
               : { url: url.trim(), durations: selectedDurations, instructions: customInstructions.trim() || undefined }
         ),
       });

@@ -1934,9 +1934,9 @@ ${coverageGuidance}
 ${cutPointRules}
 
 Additional rules:
-1. No duration presets, no clip count cap — return every worthwhile segment${customInstructions ? `\n2. MANDATORY TOPIC FILTER: The user has strictly requested only: "${customInstructions}". You MUST ONLY return clips that directly and clearly match this. Skip any segment that does not match. Return [] if nothing matches.` : ""}
+1. No duration presets, no clip count cap — return every worthwhile segment${customInstructions ? `\n2. TOPIC PRIORITY: The user wants clips focused on: "${customInstructions.slice(0, 300)}". Strongly prioritize segments that match this topic. If a segment closely matches, include it. If the video has little matching content, return the closest matching segments you can find rather than returning empty.` : ""}
 ${customInstructions ? "3." : "2."} Clips must NOT overlap each other
-${customInstructions ? "4." : "3."} ${customInstructions ? "Scan the full video from start to end — but ONLY return clips that match the topic filter above. Never add off-topic clips to fill coverage." : "Spread clips across the FULL runtime — start, every middle section, and end"}
+${customInstructions ? "4." : "3."} ${customInstructions ? "Scan the full video from start to end — prioritize clips matching the topic, but return something even if the match is approximate." : "Spread clips across the FULL runtime — start, every middle section, and end"}
 ${customInstructions ? "5." : "4."} targetDuration = Math.round(endSec - startSec) — just reflect the actual clip length you chose
 ${customInstructions ? "6." : "5."} startSec ≥ 0, endSec ≤ ${videoDuration || 99999}, endSec > startSec — plain integers
 ${customInstructions ? "7." : "6."} Write ALL output fields (title, description, reason) in English
@@ -1945,7 +1945,7 @@ CRITICAL: Respond with ONLY a valid JSON array — no markdown, no code fences, 
 [{"targetDuration": <endSec minus startSec rounded to nearest second>, "startSec": <integer>, "endSec": <integer>, "title": "<English title>", "description": "<2-3 sentences English>", "reason": "<one sentence: what makes this a natural, complete standalone clip>"}]`;
 
       const instructionBlock = customInstructions
-        ? `\n⚠️ MANDATORY TOPIC FILTER — READ THIS FIRST:\nThe user has given you a strict filter: "${customInstructions}"\nYou MUST ONLY return clips that directly and clearly match this filter. Skip EVERY segment that does not match, even if it is otherwise interesting or high-quality. If no segments match, return an empty array [].\n`
+        ? `\n⚠️ TOPIC PRIORITY — READ THIS FIRST:\nThe user wants clips focused on: "${customInstructions}"\nStrongly prioritize segments matching this topic. If the video clearly discusses this topic somewhere, return those segments. If the match is approximate or the topic is discussed briefly, still return the best matching clip rather than nothing. Only return [] if the video has absolutely no connection to the topic at all.\n`
         : "";
 
       userContent = `Video: "${videoTitle}"
