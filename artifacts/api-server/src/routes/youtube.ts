@@ -185,6 +185,13 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     "--extractor-args",
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
+} else {
+  // Exclude dead android_sdkless client that YouTube phased out in 2025/2026.
+  // This prevents wasted attempts and reduces bot-detection surface.
+  BASE_YTDLP_ARGS.push(
+    "--extractor-args",
+    "youtube:player_client=default,-android_sdkless",
+  );
 }
 
 function getYtdlpCookieArgs(): string[] {
@@ -766,6 +773,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   } else {
     args.push("-f", rawFormatId);
     args.push("--merge-output-format", "mp4");
+    // ffmpeg reconnect flags — required for YouTube SABR/adaptive streaming (2025+).
+    // Without these, mid-download connection resets cause corrupt or incomplete files.
+    args.push("--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5");
   }
 
   args.push("-o", outputPath, job.url);

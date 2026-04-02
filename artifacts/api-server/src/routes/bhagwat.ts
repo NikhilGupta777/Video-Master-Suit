@@ -489,17 +489,31 @@ async function generateAllSegmentImages(
   return imagePaths;
 }
 
-// Base args with retry logic, socket timeout, and browser headers.
-// Keep extractor client selection on yt-dlp defaults for compatibility.
-const YTDLP_BASE_ARGS = [
-  "--retries",
-  "3",
-  "--fragment-retries",
-  "3",
-  "--extractor-retries",
-  "3",
-  "--socket-timeout",
-  "30",
+// ── yt-dlp configuration (mirrors youtube.ts, kept in sync) ──────────────────
+const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
+const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
+const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+const YTDLP_COOKIES_FILE =
+  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+
+function getBhagwatCookieArgs(): string[] {
+  if (!YTDLP_COOKIES_FILE) return [];
+  try {
+    if (!existsSync(YTDLP_COOKIES_FILE)) return [];
+    const stat = statSync(YTDLP_COOKIES_FILE);
+    if (!stat.isFile() || stat.size < 24) return [];
+    const header = readFileSync(YTDLP_COOKIES_FILE, "utf8").slice(0, 256).trimStart();
+    if (!header.startsWith("# Netscape HTTP Cookie File") && !header.startsWith(".youtube.com")) return [];
+    return ["--cookies", YTDLP_COOKIES_FILE];
+  } catch { return []; }
+}
+
+// Base args applied to every yt-dlp call in bhagwat routes.
+const YTDLP_BASE_ARGS: string[] = [
+  "--retries", "5",
+  "--fragment-retries", "5",
+  "--extractor-retries", "5",
+  "--socket-timeout", "30",
   "--add-headers",
   [
     "Accept-Language:en-US,en;q=0.9",
@@ -509,16 +523,26 @@ const YTDLP_BASE_ARGS = [
   ].join(";"),
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "--sleep-requests", "1",
+  "--sleep-interval", "2",
 ];
 
-// Subtitle args with default client selection.
-const YTDLP_SUBS_ARGS = [
-  "--retries",
-  "3",
-  "--extractor-retries",
-  "3",
-  "--socket-timeout",
-  "30",
+if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
+
+if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+  YTDLP_BASE_ARGS.push(
+    "--extractor-args",
+    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+  );
+} else {
+  YTDLP_BASE_ARGS.push("--extractor-args", "youtube:player_client=default,-android_sdkless");
+}
+
+// Subtitle args (lighter — no fragment retries needed).
+const YTDLP_SUBS_ARGS: string[] = [
+  "--retries", "5",
+  "--extractor-retries", "5",
+  "--socket-timeout", "30",
   "--add-headers",
   [
     "Accept-Language:en-US,en;q=0.9",
@@ -529,45 +553,108 @@ const YTDLP_SUBS_ARGS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
+if (YTDLP_PROXY) YTDLP_SUBS_ARGS.push("--proxy", YTDLP_PROXY);
+if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+  YTDLP_SUBS_ARGS.push(
+    "--extractor-args",
+    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+  );
+} else {
+  YTDLP_SUBS_ARGS.push("--extractor-args", "youtube:player_client=default,-android_sdkless");
+}
+
+// YouTube block detection (same pattern as youtube.ts)
+function isBhagwatYtBlocked(msg: string): boolean {
+  return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(msg);
+}
+
+// Fallback player clients for cloud/EC2 IPs — mirrors youtube.ts order.
+const YTDLP_CLOUD_FALLBACKS: string[][] = [
+  ["--extractor-args", "youtube:player_client=web_embedded"],
+  ["--extractor-args", "youtube:player_client=ios"],
+  ["--extractor-args", "youtube:player_client=android"],
+  ["--extractor-args", "youtube:player_client=mweb"],
+  ["--extractor-args", "youtube:player_client=tv_embedded"],
+  ["--extractor-args", "youtube:player_client=tv_embedded,android"],
+];
+
 // ── yt-dlp helpers ────────────────────────────────────────────────────────────
-function runYtDlp(args: string[]): Promise<string> {
+function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    let out = "",
-      err = "";
-    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...args], {
-      env: PYTHON_ENV,
-    });
-    proc.stdout.on("data", (d) => {
-      out += d.toString();
-    });
-    proc.stderr.on("data", (d) => {
-      err += d.toString();
-    });
+    let out = "", err = "";
+    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...baseArgs, ...extraArgs, ...callArgs], { env: PYTHON_ENV });
+    proc.stdout.on("data", (d) => { out += d.toString(); });
+    proc.stderr.on("data", (d) => { err += d.toString(); });
     proc.on("close", (code) =>
-      code === 0
-        ? resolve(out.trim())
-        : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`)),
+      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`)),
     );
   });
 }
 
-function runYtDlpForSubs(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let out = "",
-      err = "";
-    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...YTDLP_SUBS_ARGS, ...args], {
-      env: PYTHON_ENV,
-    });
-    proc.stdout.on("data", (d) => {
-      out += d.toString();
-    });
-    proc.stderr.on("data", (d) => {
-      err += d.toString();
-    });
-    proc.on("close", (code) =>
-      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-500))),
-    );
-  });
+async function runYtDlp(args: string[]): Promise<string> {
+  const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
+  const cookieArgs = getBhagwatCookieArgs();
+  const attemptPlans: string[][] = [[]];
+  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+
+  let lastErr: Error | null = null;
+  const attempted = new Set<string>();
+
+  for (const extra of attemptPlans) {
+    const key = extra.join("\x01");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args); }
+    catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp failed");
+      if (!maybeUrl || !isBhagwatYtBlocked(lastErr.message)) throw lastErr;
+    }
+  }
+
+  if (maybeUrl && lastErr) {
+    for (const fallback of YTDLP_CLOUD_FALLBACKS) {
+      const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
+      for (const extra of plans) {
+        const key = extra.join("\x01");
+        if (attempted.has(key)) continue;
+        attempted.add(key);
+        try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args); }
+        catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp fallback failed"); }
+      }
+    }
+  }
+
+  throw lastErr ?? new Error("yt-dlp failed");
+}
+
+async function runYtDlpForSubs(args: string[]): Promise<string> {
+  const cookieArgs = getBhagwatCookieArgs();
+  const attemptPlans: string[][] = [[]];
+  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+
+  let lastErr: Error | null = null;
+  const attempted = new Set<string>();
+
+  for (const extra of attemptPlans) {
+    const key = extra.join("\x01");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args); }
+    catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp subs failed");
+      if (!isBhagwatYtBlocked(lastErr.message)) throw lastErr;
+    }
+  }
+
+  for (const fallback of YTDLP_CLOUD_FALLBACKS.slice(0, 3)) {
+    const key = fallback.join("\x01");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, fallback, args); }
+    catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp subs fallback failed"); }
+  }
+
+  throw lastErr ?? new Error("yt-dlp subs failed");
 }
 
 function fetchUrl(url: string): Promise<string> {
