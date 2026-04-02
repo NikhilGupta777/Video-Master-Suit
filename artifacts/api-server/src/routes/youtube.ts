@@ -1088,6 +1088,195 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
   }
 });
 
+// ─── AI Subtitle Correction ───────────────────────────────────────────────
+
+function audioMimeType(ext: string): string {
+  const map: Record<string, string> = {
+    m4a: "audio/mp4", mp4: "audio/mp4", webm: "audio/webm",
+    ogg: "audio/ogg", opus: "audio/ogg", mp3: "audio/mpeg",
+    flac: "audio/flac", wav: "audio/wav", aac: "audio/aac",
+  };
+  return map[ext.toLowerCase()] ?? "audio/mpeg";
+}
+
+router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
+  const { url, format = "srt" } = req.body as { url: string; format?: string };
+
+  if (!url) {
+    res.status(400).json({ error: "url is required" });
+    return;
+  }
+
+  if (!isAiConfigured()) {
+    res.status(503).json({ error: "AI not configured — add GEMINI_API_KEY or enable Replit Gemini integration" });
+    return;
+  }
+
+  const outputFormat = format === "vtt" ? "vtt" : "srt";
+  const sessionId = randomUUID();
+  const audioDir = join(DOWNLOAD_DIR, `audio-fix-${sessionId}`);
+  const subDir = join(DOWNLOAD_DIR, `subs-fix-${sessionId}`);
+  let geminiFileName: string | null = null;
+  const genAI = process.env.GEMINI_API_KEY
+    ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+    : null;
+
+  try {
+    // ── Step 1: Fetch raw subtitle VTT ──
+    mkdirSync(subDir, { recursive: true });
+    const subBase = join(subDir, "sub");
+    let vttContent: string | null = null;
+
+    try {
+      const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+      const meta = JSON.parse(metaJson);
+      const directUrl = pickBestSubtitleUrl(meta.subtitles ?? {}, meta.automatic_captions ?? {}, meta.language);
+      if (directUrl) {
+        const raw = await fetchUrl(directUrl);
+        if (raw.includes("WEBVTT") || raw.includes("-->")) vttContent = raw;
+      }
+    } catch {}
+
+    if (!vttContent) {
+      await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-lang", "hi.*,en.*", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, url]).catch(() => {});
+      if (!existsSync(subDir) || !readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
+        await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, url]).catch(() => {});
+      }
+      if (existsSync(subDir)) {
+        const files = readdirSync(subDir);
+        const vttFile = files.map((f) => join(subDir, f)).find((f) => f.endsWith(".vtt"));
+        if (vttFile) vttContent = readFileSync(vttFile, "utf8");
+      }
+    }
+
+    if (!vttContent) {
+      res.status(404).json({ error: "No subtitles found for this video" });
+      return;
+    }
+
+    const systemInstruction = `You are an expert video transcript editor specializing in Hindi, Sanskrit, and Indian devotional content including Bhagwat Katha, Ramkatha, spiritual discourses, and bhajans.`;
+
+    const promptText = `I am providing a rough auto-generated transcript. Please carefully correct all errors.
+
+Instructions:
+1. Fix spelling, grammar, and word-boundary errors throughout.
+2. Pay special attention to Hindi, Sanskrit, and spiritual terminology (deity names, scripture titles, place names, mantras) that may be phonetically misheard by auto-captioning.
+3. Correct numeric errors — time durations, counts, and dates are frequently wrong in auto-generated captions (e.g. "6 months" vs "1 month").
+4. Fix Hinglish (mixed Hindi-English) sentences while preserving the speaker's natural style.
+5. CRITICAL: Return ONLY the corrected transcript in the EXACT same ${outputFormat.toUpperCase()} timestamp format. Do not alter any timestamps, sequence numbers, or structure. Only fix the spoken text of each subtitle entry.
+6. Do not add, remove, merge, or split any subtitle entries.
+7. Return ONLY the corrected subtitle file content — no explanation, no commentary.
+
+Here is the raw transcript:
+${vttContent}`;
+
+    let corrected = "";
+
+    // ── Step 2a: Audio-aware correction using Gemini File API (best quality) ──
+    if (genAI) {
+      let audioUsed = false;
+      try {
+        mkdirSync(audioDir, { recursive: true });
+        const audioPattern = join(audioDir, "audio.%(ext)s");
+
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn("python3", [
+            "-m", "yt_dlp",
+            "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
+            "--no-playlist", "--no-warnings",
+            "-o", audioPattern, url,
+          ], { env: PYTHON_ENV });
+          let stderr = "";
+          proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+          proc.on("close", (code) => { code === 0 ? resolve() : reject(new Error(stderr.slice(-500))); });
+          proc.on("error", reject);
+        });
+
+        const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
+        const audioFile = audioFiles.map((f) => join(audioDir, f)).find((f) => /\.(m4a|mp4|webm|ogg|opus|mp3|flac|wav|aac)$/i.test(f));
+
+        if (audioFile) {
+          const ext = audioFile.split(".").pop()!.toLowerCase();
+          const mimeType = audioMimeType(ext);
+          const audioBuffer = readFileSync(audioFile);
+          const audioBlob = new Blob([audioBuffer], { type: mimeType });
+
+          const uploadResult = await genAI.files.upload({
+            file: audioBlob,
+            config: { mimeType, displayName: "video-audio" },
+          });
+          geminiFileName = uploadResult.name!;
+
+          // Poll until ACTIVE (up to 60s)
+          let fileInfo: any = uploadResult;
+          let attempts = 0;
+          while (fileInfo.state === "PROCESSING" && attempts < 30) {
+            await new Promise((r) => setTimeout(r, 2000));
+            fileInfo = await genAI.files.get({ name: geminiFileName });
+            attempts++;
+          }
+
+          if (fileInfo.state === "ACTIVE") {
+            const result = await genAI.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: [{
+                role: "user",
+                parts: [
+                  { fileData: { fileUri: fileInfo.uri, mimeType: fileInfo.mimeType } },
+                  { text: promptText },
+                ],
+              }],
+              config: { systemInstruction },
+            });
+            corrected = (result as any).text ?? "";
+            audioUsed = true;
+          }
+        }
+      } catch (audioErr) {
+        req.log.warn({ audioErr }, "Audio-aware correction failed, falling back to text-only");
+      }
+
+      if (!audioUsed) {
+        const result = await genAI.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [{ role: "user", parts: [{ text: promptText }] }],
+          config: { systemInstruction },
+        });
+        corrected = (result as any).text ?? "";
+      }
+    } else {
+      // ── Step 2b: Text-only via Replit Gemini integration ──
+      corrected = await clipsGeminiContent(systemInstruction, promptText);
+    }
+
+    // Strip any markdown fences the model may have added
+    corrected = corrected.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+
+    const filename = `subtitles-corrected.${outputFormat}`;
+    const contentType = outputFormat === "vtt" ? "text/vtt" : "application/x-subrip";
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", `${contentType}; charset=utf-8`);
+    res.send(corrected);
+
+  } catch (err: any) {
+    req.log.error({ err }, "Failed to AI-fix subtitles");
+    if (!res.headersSent)
+      res.status(500).json({ error: err.message || "Failed to fix subtitles with AI" });
+  } finally {
+    if (geminiFileName && genAI) {
+      try { await (genAI.files as any).delete({ name: geminiFileName }); } catch {}
+    }
+    for (const dir of [audioDir, subDir]) {
+      try {
+        if (existsSync(dir)) {
+          for (const f of readdirSync(dir)) { try { unlinkSync(join(dir, f)); } catch {} }
+          rmdirSync(dir);
+        }
+      } catch {}
+    }
+  }
+});
+
 // ─── Best Clips Feature (streaming with SSE) ──────────────────────────────
 
 // Replit integration: gemini-3.1-pro-preview  →  own key fallback: gemini-2.5-pro

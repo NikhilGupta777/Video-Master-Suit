@@ -461,29 +461,105 @@ function FormatCard({
 }
 
 function SubtitleDownloadRow({ url }: { url: string }) {
+  const [fixing, setFixing] = useState(false);
+  const { toast } = useToast();
+
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
   const encoded = encodeURIComponent(url);
 
+  const handleFixWithAI = async () => {
+    setFixing(true);
+    try {
+      const res = await fetch(`${BASE}/api/youtube/subtitles/fix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, format: "srt" }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(data.error || "AI correction failed");
+      }
+
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = "subtitles-ai-corrected.srt";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+
+      toast({ title: "Done!", description: "AI-corrected subtitles downloaded." });
+    } catch (err: any) {
+      toast({
+        title: "AI Correction Failed",
+        description: err.message || "Could not correct subtitles. Make sure a Gemini API key is configured.",
+        variant: "destructive",
+      });
+    } finally {
+      setFixing(false);
+    }
+  };
+
   return (
-    <div className="flex items-center gap-3 px-1 pt-1">
-      <Captions className="w-4 h-4 text-white/40 shrink-0" />
-      <span className="text-sm text-white/40 shrink-0">Subtitles</span>
-      <a
-        href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=srt`}
-        download="subtitles.srt"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
-      >
-        <Download className="w-3 h-3" />
-        SRT
-      </a>
-      <a
-        href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=vtt`}
-        download="subtitles.vtt"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
-      >
-        <Download className="w-3 h-3" />
-        VTT
-      </a>
+    <div className="glass-panel rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3 border-white/5">
+      <div className="flex items-center gap-2 shrink-0">
+        <Captions className="w-4 h-4 text-white/50" />
+        <span className="text-sm font-medium text-white/60">Subtitles</span>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <a
+          href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=srt`}
+          download="subtitles.srt"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
+        >
+          <Download className="w-3 h-3" />
+          SRT
+        </a>
+        <a
+          href={`${BASE}/api/youtube/subtitles?url=${encoded}&format=vtt`}
+          download="subtitles.vtt"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/14 border border-white/10 hover:border-white/20 text-white/70 hover:text-white text-xs font-semibold transition-all duration-200"
+        >
+          <Download className="w-3 h-3" />
+          VTT
+        </a>
+
+        <div className="w-px h-5 bg-white/10 mx-0.5 hidden sm:block" />
+
+        <button
+          onClick={handleFixWithAI}
+          disabled={fixing}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 border",
+            fixing
+              ? "bg-violet-500/10 border-violet-500/20 text-violet-300 cursor-wait"
+              : "bg-gradient-to-r from-violet-600/20 to-purple-600/20 hover:from-violet-600/30 hover:to-purple-600/30 border-violet-500/30 hover:border-violet-500/50 text-violet-300 hover:text-violet-200"
+          )}
+        >
+          {fixing ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Fixing with AI…
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-3.5 h-3.5" />
+              Fix with AI
+            </>
+          )}
+        </button>
+      </div>
+
+      {fixing && (
+        <p className="text-xs text-white/30 sm:ml-auto">
+          Downloading audio & running AI correction — this may take a minute…
+        </p>
+      )}
     </div>
   );
 }
