@@ -10,6 +10,12 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       BHAGWAT_PASSWORD: ${BHAGWAT_PASSWORD}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+      # Optional: route yt-dlp through a proxy to bypass YouTube's EC2 IP block
+      # e.g. YTDLP_PROXY=socks5://user:pass@host:port
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+      # Optional: YouTube po_token + visitor_data for bot-detection bypass
+      YTDLP_PO_TOKEN: ${YTDLP_PO_TOKEN:-}
+      YTDLP_VISITOR_DATA: ${YTDLP_VISITOR_DATA:-}
     depends_on:
       db:
         condition: service_healthy
