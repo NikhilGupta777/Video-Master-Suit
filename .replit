@@ -1,6 +1,9 @@
 modules = ["nodejs-24", "python-3.11"]
 
 [[artifacts]]
+id = "artifacts/yt-downloader"
+
+[[artifacts]]
 id = "artifacts/api-server"
 
 [[artifacts]]
