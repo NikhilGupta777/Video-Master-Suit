@@ -178,11 +178,12 @@ if (YTDLP_PROXY) {
   BASE_YTDLP_ARGS.push("--proxy", YTDLP_PROXY);
 }
 
-// Inject po_token + visitor_data if configured (bypasses YouTube bot detection on server IPs)
+// Inject po_token + visitor_data if configured (bypasses YouTube bot detection on server IPs).
+// Format confirmed by yt-dlp wiki: web.gvs+TOKEN
 if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
   BASE_YTDLP_ARGS.push(
     "--extractor-args",
-    `youtube:po_token=web+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 }
 
@@ -261,11 +262,13 @@ async function runYtDlp(args: string[]): Promise<string> {
   if (cookieArgs.length) attemptPlans.push(cookieArgs);
 
   // Useful fallback player clients for cloud/server IPs where default web client gets bot-check.
-  // Ordered from most to least likely to work on AWS/datacenter IPs.
+  // web_embedded is first — confirmed most reliable on datacenter IPs, no PO token required.
   const youtubeFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=web_embedded"],
     ["--extractor-args", "youtube:player_client=ios"],
     ["--extractor-args", "youtube:player_client=android"],
     ["--extractor-args", "youtube:player_client=mweb"],
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
     ["--extractor-args", "youtube:player_client=android,web"],
     ["--extractor-args", "youtube:player_client=android,web_safari"],
     ["--extractor-args", "youtube:player_client=tv_embedded,android"],
