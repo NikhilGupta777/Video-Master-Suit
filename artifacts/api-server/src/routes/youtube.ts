@@ -1683,6 +1683,7 @@ async function runClipAnalysis(
   const durationLabels: Record<number, string> = {
     60: "1 minute",
     180: "3 minutes",
+    480: "8-10 minutes (AI picks exact length)",
     9999: "≥ 5 minutes (AI picks exact length)",
   };
 

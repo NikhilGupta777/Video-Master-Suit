@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors, Sparkles, Clock, Download, Play, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info, Film, Wifi, FileText, Bot,
-  AlertTriangle, Wand2, Timer, Pencil
+  AlertTriangle, Wand2, Timer, Pencil, Swords, Biohazard, Wind, Landmark, X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,9 +23,73 @@ export interface BestClip {
 }
 
 const DURATION_OPTIONS = [
-  { label: "1 min",   value: 60,   color: "from-blue-500/30 to-blue-600/10",    badge: "text-blue-300 border-blue-500/30 bg-blue-500/10",    accent: "border-blue-500/20 bg-blue-500/5"    },
-  { label: "3 min",   value: 180,  color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
-  { label: "≥ 5 min", value: 9999, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
+  { label: "1 min",     value: 60,   color: "from-blue-500/30 to-blue-600/10",    badge: "text-blue-300 border-blue-500/30 bg-blue-500/10",    accent: "border-blue-500/20 bg-blue-500/5"    },
+  { label: "3 min",     value: 180,  color: "from-purple-500/30 to-purple-600/10", badge: "text-purple-300 border-purple-500/30 bg-purple-500/10", accent: "border-purple-500/20 bg-purple-500/5" },
+  { label: "≥ 5 min",  value: 9999, color: "from-amber-500/30 to-amber-600/10",   badge: "text-amber-300 border-amber-500/30 bg-amber-500/10",   accent: "border-amber-500/20 bg-amber-500/5"  },
+  { label: "8-10 min", value: 480,  color: "from-rose-500/30 to-pink-600/10",     badge: "text-rose-300 border-rose-500/30 bg-rose-500/10",     accent: "border-rose-500/20 bg-rose-500/5"    },
+];
+
+interface TopicPreset {
+  id: string;
+  icon: React.ElementType;
+  label: string;
+  labelHindi: string;
+  description: string;
+  accentColor: string;
+  borderColor: string;
+  bgColor: string;
+  instructions: string;
+}
+
+const TOPIC_PRESETS: TopicPreset[] = [
+  {
+    id: "war",
+    icon: Swords,
+    label: "War / World War",
+    labelHindi: "युद्ध / विश्व युद्ध",
+    description: "Nuclear war, India-Pakistan, World War prophecies",
+    accentColor: "text-red-300",
+    borderColor: "border-red-500/40",
+    bgColor: "bg-red-500/10",
+    instructions:
+      "Find ONLY segments where the speaker is prophesying about yuddha (war) — World War, nuclear war, Bharat-Pakistan yuddha, America war, Iran war, missile attacks, nuclear bombs, or countries going to war. Include segments with specific war predictions, timeline mentions, or country-specific prophecies. Skip all non-war content.",
+  },
+  {
+    id: "disease",
+    icon: Biohazard,
+    label: "Diseases / Virus",
+    labelHindi: "रोग / वायरस",
+    description: "64 viruses, pandemics, lockdown predictions",
+    accentColor: "text-green-300",
+    borderColor: "border-green-500/40",
+    bgColor: "bg-green-500/10",
+    instructions:
+      "Find ONLY segments about rog (disease) or virus prophecy — 64 viruses coming (chaunsath rog/virus), Corona returning, new pandemic diseases spreading, lockdown predictions, mass illness, hospitals overflowing, or any health-related disaster prophecy. The speaker mentions many diseases will come one after another. Include only clear disease/virus prophecy segments.",
+  },
+  {
+    id: "pralay",
+    icon: Wind,
+    label: "Khand Pralay",
+    labelHindi: "खंड प्रलय",
+    description: "Unchass vayu, agni vayu, elemental destruction",
+    accentColor: "text-cyan-300",
+    borderColor: "border-cyan-500/40",
+    bgColor: "bg-cyan-500/10",
+    instructions:
+      "Find ONLY segments about khand pralay or natural destruction prophecy — unchass vayu (49 winds/tornadoes), agni vayu (fire wind), panch tattva vinash (destruction by all 5 elements), cyclones, earthquakes, floods, tornado storms, nature's wrath. The speaker describes destruction by wind, fire, water and all elements together. Include only clear natural calamity prophecy segments.",
+  },
+  {
+    id: "jagannath",
+    icon: Landmark,
+    label: "Jagannath Puri Signs",
+    labelHindi: "जगन्नाथ पुरी संकेत",
+    description: "Divine signs, omens, celestial signals at Puri",
+    accentColor: "text-yellow-300",
+    borderColor: "border-yellow-500/40",
+    bgColor: "bg-yellow-500/10",
+    instructions:
+      "Find ONLY segments about Jagannath Puri mandir (temple) as a divine sign or omen of coming events. Look for discussions about special signs, unusual events or omens at Jagannath Puri, celestial signs near the moon or stars (tara), divine signals indicating upcoming catastrophes, or any prophecy directly referencing Jagannath Puri. Include only clear Jagannath Puri related segments.",
+  },
 ];
 
 type StepStatus = "idle" | "running" | "done" | "warn" | "error";
@@ -92,6 +156,32 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [customInstructions, setCustomInstructions] = useState(defaultInstructions ?? "");
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+  const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
+  const presetDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (presetDropdownRef.current && !presetDropdownRef.current.contains(e.target as Node)) {
+        setPresetDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const applyPreset = (preset: TopicPreset) => {
+    setSelectedPreset(preset.id);
+    setCustomInstructions(preset.instructions);
+    setIsAutoMode(false);
+    setSelectedDurations([480]);
+    setPresetDropdownOpen(false);
+  };
+
+  const clearPreset = () => {
+    setSelectedPreset(null);
+    setCustomInstructions("");
+  };
   const [clips, setClips] = useState<BestClip[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasTranscript, setHasTranscript] = useState(false);
@@ -370,21 +460,130 @@ export const BestClips = forwardRef(function BestClips({ url, onEditClip, defaul
           )}
         </div>
 
+        {/* Topic Preset Dropdown */}
+        <div className="space-y-2 pt-1" ref={presetDropdownRef}>
+          <label className="text-white/60 text-sm font-medium flex items-center gap-2">
+            <Sparkles className="w-4 h-4" />
+            Topic Preset <span className="text-white/30 font-normal">(Optional — auto-fills instructions)</span>
+          </label>
+
+          <div className="relative">
+            {/* Trigger button */}
+            <button
+              type="button"
+              onClick={() => setPresetDropdownOpen(o => !o)}
+              disabled={isLoading}
+              className={cn(
+                "w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-sm transition-all duration-200",
+                selectedPreset
+                  ? cn(
+                      TOPIC_PRESETS.find(p => p.id === selectedPreset)?.bgColor,
+                      TOPIC_PRESETS.find(p => p.id === selectedPreset)?.borderColor,
+                    )
+                  : "bg-white/5 border-white/10 hover:border-white/20"
+              )}
+            >
+              {selectedPreset ? (() => {
+                const p = TOPIC_PRESETS.find(t => t.id === selectedPreset)!;
+                const Icon = p.icon;
+                return (
+                  <span className="flex items-center gap-2.5 min-w-0">
+                    <Icon className={cn("w-4 h-4 shrink-0", p.accentColor)} />
+                    <span className="flex flex-col items-start min-w-0">
+                      <span className={cn("font-semibold text-sm leading-tight", p.accentColor)}>{p.label}</span>
+                      <span className="text-white/40 text-xs font-normal">{p.labelHindi}</span>
+                    </span>
+                  </span>
+                );
+              })() : (
+                <span className="text-white/40">Select a Bhavishya Malika topic...</span>
+              )}
+              <span className="flex items-center gap-1 shrink-0">
+                {selectedPreset && (
+                  <span
+                    role="button"
+                    onClick={(e) => { e.stopPropagation(); clearPreset(); }}
+                    className="p-0.5 rounded-md hover:bg-white/10 text-white/30 hover:text-white/60 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </span>
+                )}
+                <ChevronDown className={cn("w-4 h-4 text-white/30 transition-transform duration-200", presetDropdownOpen && "rotate-180")} />
+              </span>
+            </button>
+
+            {/* Dropdown panel */}
+            <AnimatePresence>
+              {presetDropdownOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6, scaleY: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scaleY: 1 }}
+                  exit={{ opacity: 0, y: -6, scaleY: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute z-50 top-full mt-2 w-full glass-panel rounded-xl border border-white/10 overflow-hidden shadow-2xl"
+                  style={{ transformOrigin: "top" }}
+                >
+                  {TOPIC_PRESETS.map((preset, idx) => {
+                    const Icon = preset.icon;
+                    const isActive = selectedPreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => applyPreset(preset)}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-3 text-left transition-all duration-150",
+                          idx !== 0 && "border-t border-white/5",
+                          isActive ? cn(preset.bgColor, "opacity-100") : "hover:bg-white/5"
+                        )}
+                      >
+                        <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border", preset.bgColor, preset.borderColor)}>
+                          <Icon className={cn("w-4 h-4", preset.accentColor)} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2">
+                            <span className={cn("font-semibold text-sm", isActive ? preset.accentColor : "text-white")}>{preset.label}</span>
+                            <span className="text-white/35 text-xs">{preset.labelHindi}</span>
+                          </div>
+                          <p className="text-white/45 text-xs mt-0.5 line-clamp-1">{preset.description}</p>
+                        </div>
+                        {isActive && <CheckCircle2 className={cn("w-4 h-4 shrink-0", preset.accentColor)} />}
+                      </button>
+                    );
+                  })}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {selectedPreset && (
+            <p className={cn("text-xs flex items-center gap-1.5", TOPIC_PRESETS.find(p => p.id === selectedPreset)?.accentColor)}>
+              <Sparkles className="w-3 h-3 shrink-0" />
+              Duration set to 8-10 min — AI will search only for {TOPIC_PRESETS.find(p => p.id === selectedPreset)?.label} prophecy segments
+            </p>
+          )}
+        </div>
+
         {/* Custom Instructions Panel */}
-        <div className="space-y-2 pt-2">
+        <div className="space-y-2">
           <label className="text-white/60 text-sm font-medium flex items-center gap-2">
             <FileText className="w-4 h-4" />
-            AI Instructions (Optional)
+            AI Instructions {selectedPreset ? "(from preset — edit freely)" : "(Optional)"}
           </label>
           <textarea
             value={customInstructions}
-            onChange={(e) => setCustomInstructions(e.target.value)}
+            onChange={(e) => { setCustomInstructions(e.target.value); if (!e.target.value) setSelectedPreset(null); }}
             placeholder="Tell AI what to focus on... e.g. 'Get all clips about war discussions', 'Find all Bhagwat Katha or Krishna Leela stories', 'Extract any devotional or bhakti content', 'Find every discussion about spiritual topics'"
-            className="w-full p-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-primary/50 focus:bg-white/8 transition-colors resize-none"
+            className={cn(
+              "w-full p-3 rounded-xl border text-white text-sm placeholder-white/30 focus:outline-none transition-colors resize-none",
+              selectedPreset
+                ? cn("focus:border-opacity-70", TOPIC_PRESETS.find(p => p.id === selectedPreset)?.bgColor, TOPIC_PRESETS.find(p => p.id === selectedPreset)?.borderColor, "bg-opacity-10")
+                : "bg-white/5 border-white/10 focus:border-primary/50 focus:bg-white/8"
+            )}
             rows={3}
             disabled={isLoading}
           />
-          {customInstructions && (
+          {customInstructions && !selectedPreset && (
             <p className="text-white/40 text-xs">Instructions will be used to guide AI analysis</p>
           )}
         </div>
