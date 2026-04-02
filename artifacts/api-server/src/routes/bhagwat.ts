@@ -23,27 +23,35 @@ import { AssemblyAI } from "assemblyai";
 
 const router: Router = Router();
 
-// Make yt-dlp (installed via uv sync) visible to the system Python.
-// process.cwd() is always the workspace root (both dev and production).
+// Make yt-dlp (installed via uv sync in Replit, or system pip3 in Docker)
+// visible to Python without overriding the system PATH in environments where
+// .pythonlibs does not exist (e.g. the Docker production container).
 const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
 
-// Dynamically resolve the correct python3.x site-packages directory so this
-// works regardless of which Python minor version is active in production.
-function resolvePythonSitePackages(workspaceRoot: string): string {
-  const libRoot = join(workspaceRoot, ".pythonlibs", "lib");
+function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
+  const pythonLibsBin = join(workspaceRoot, ".pythonlibs", "bin");
+  const pythonLibsLib = join(workspaceRoot, ".pythonlibs", "lib");
+
+  // Only inject Replit-specific paths when they actually exist on disk.
+  if (!existsSync(pythonLibsBin)) {
+    return { ...process.env };
+  }
+
+  let sitePackages = join(pythonLibsLib, "python3.11", "site-packages");
   try {
-    const entries = readdirSync(libRoot);
+    const entries = readdirSync(pythonLibsLib);
     const pyDir = entries.find((e) => /^python3\.\d+$/.test(e));
-    if (pyDir) return join(libRoot, pyDir, "site-packages");
+    if (pyDir) sitePackages = join(pythonLibsLib, pyDir, "site-packages");
   } catch {}
-  return join(libRoot, "python3.11", "site-packages"); // safe fallback
+
+  return {
+    ...process.env,
+    PATH: `${pythonLibsBin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+    PYTHONPATH: sitePackages,
+  };
 }
 
-const PYTHON_ENV = {
-  ...process.env,
-  PATH: `${_workspaceRoot}/.pythonlibs/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
-  PYTHONPATH: resolvePythonSitePackages(_workspaceRoot),
-};
+const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 const BHAGWAT_RENDERED_DIR = join(DOWNLOAD_DIR, "bhagwat_rendered");
