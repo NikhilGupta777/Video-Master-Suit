@@ -1154,6 +1154,10 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
       return;
     }
 
+    // Always feed the AI in the target format so it mirrors the correct syntax
+    const inputTranscript = outputFormat === "srt" ? vttToSrt(vttContent) : vttContent;
+    const formatLabel = outputFormat === "srt" ? "SRT (timestamps use comma: HH:MM:SS,mmm --> HH:MM:SS,mmm)" : "WebVTT";
+
     const systemInstruction = `You are an expert video transcript editor specializing in Hindi, Sanskrit, and Indian devotional content including Bhagwat Katha, Ramkatha, spiritual discourses, and bhajans.`;
 
     const promptText = `I am providing a rough auto-generated transcript. Please carefully correct all errors.
@@ -1163,12 +1167,15 @@ Instructions:
 2. Pay special attention to Hindi, Sanskrit, and spiritual terminology (deity names, scripture titles, place names, mantras) that may be phonetically misheard by auto-captioning.
 3. Correct numeric errors — time durations, counts, and dates are frequently wrong in auto-generated captions (e.g. "6 months" vs "1 month").
 4. Fix Hinglish (mixed Hindi-English) sentences while preserving the speaker's natural style.
-5. CRITICAL: Return ONLY the corrected transcript in the EXACT same ${outputFormat.toUpperCase()} timestamp format. Do not alter any timestamps, sequence numbers, or structure. Only fix the spoken text of each subtitle entry.
+5. CRITICAL FORMAT RULES for ${formatLabel}:
+   - Keep every sequence number exactly as given (1, 2, 3, …). Do NOT drop them.
+   - Keep timestamps exactly as given — do NOT change dots to commas or commas to dots.
+   - Do not alter any timestamps or structure. Only fix the spoken text inside each entry.
 6. Do not add, remove, merge, or split any subtitle entries.
-7. Return ONLY the corrected subtitle file content — no explanation, no commentary.
+7. Return ONLY the corrected subtitle file content — no explanation, no commentary, no markdown fences.
 
 Here is the raw transcript:
-${vttContent}`;
+${inputTranscript}`;
 
     let corrected = "";
 
@@ -1251,6 +1258,34 @@ ${vttContent}`;
 
     // Strip any markdown fences the model may have added
     corrected = corrected.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+
+    // Post-process SRT: fix timestamps (ensure commas, not dots) and re-number if needed
+    if (outputFormat === "srt") {
+      // Fix any dot-separated milliseconds back to comma (HH:MM:SS.mmm -> HH:MM:SS,mmm)
+      corrected = corrected.replace(
+        /^(\d{2}:\d{2}:\d{2})\.(\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2})\.(\d{3})/gm,
+        "$1,$2 --> $3,$4",
+      );
+      // Re-number entries if the AI dropped sequence numbers
+      const blocks = corrected.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
+      let allHaveNumbers = true;
+      for (const block of blocks) {
+        const firstLine = block.split("\n")[0].trim();
+        if (!/^\d+$/.test(firstLine)) { allHaveNumbers = false; break; }
+      }
+      if (!allHaveNumbers) {
+        let idx = 1;
+        corrected = blocks
+          .filter((b) => b.includes("-->"))
+          .map((block) => {
+            const lines = block.split("\n");
+            // Remove any leading bare number line
+            const start = /^\d+$/.test(lines[0].trim()) ? 1 : 0;
+            return `${idx++}\n${lines.slice(start).join("\n")}`;
+          })
+          .join("\n\n");
+      }
+    }
 
     const filename = `subtitles-corrected.${outputFormat}`;
     const contentType = outputFormat === "vtt" ? "text/vtt" : "application/x-subrip";
