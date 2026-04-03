@@ -8,10 +8,11 @@ import {
   statSync,
   createReadStream,
   readFileSync,
+  writeFileSync,
   readdirSync,
   rmdirSync,
 } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { get as httpsGet } from "https";
@@ -69,6 +70,31 @@ const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
 // Then set: YTDLP_PO_TOKEN=<token>  and  YTDLP_VISITOR_DATA=<data>
 const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
 const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+
+// YTDLP_COOKIES_BASE64: base64-encoded Netscape cookie file content.
+// Export cookies from a YouTube-logged-in browser using a cookie exporter extension,
+// then base64-encode the file: base64 -w 0 cookies.txt
+// Set this env var on your server — no file upload required.
+const YTDLP_COOKIES_BASE64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
+if (YTDLP_COOKIES_BASE64) {
+  try {
+    const cookieContent = Buffer.from(YTDLP_COOKIES_BASE64, "base64").toString("utf8");
+    if (
+      cookieContent.startsWith("# Netscape HTTP Cookie File") ||
+      cookieContent.startsWith(".youtube.com") ||
+      cookieContent.includes("\t")
+    ) {
+      const cookieDir = dirname(YTDLP_COOKIES_FILE);
+      if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
+      writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
+      console.log("[yt-dlp] Loaded cookies from YTDLP_COOKIES_BASE64 env var");
+    } else {
+      console.warn("[yt-dlp] YTDLP_COOKIES_BASE64 set but decoded content does not look like a Netscape cookie file — skipping");
+    }
+  } catch (e) {
+    console.error("[yt-dlp] Failed to decode YTDLP_COOKIES_BASE64:", e);
+  }
+}
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 if (!existsSync(DOWNLOAD_DIR)) {
@@ -186,11 +212,13 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 } else {
-  // android_vr is the most reliable client on datacenter/AWS IPs in 2026.
-  // Exclude dead android_sdkless client that YouTube phased out in 2025/2026.
+  // tv_embedded is the most reliable client on datacenter/AWS IPs in 2025/2026.
+  // It uses the YouTube TV embedded player API which YouTube bot-detection is least
+  // strict about for non-residential IPs. android_vr is a strong second.
+  // Exclude dead android_sdkless client phased out by YouTube in 2025/2026.
   BASE_YTDLP_ARGS.push(
     "--extractor-args",
-    "youtube:player_client=android_vr,web_embedded,default,-android_sdkless",
+    "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
   );
 }
 
@@ -226,7 +254,7 @@ function isYouTubeUrl(url: string): boolean {
 }
 
 function isYouTubeBlockedError(message: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401/i.test(
     message,
   );
 }
@@ -268,19 +296,21 @@ async function runYtDlp(args: string[]): Promise<string> {
   const attemptPlans: string[][] = [[]];
   if (cookieArgs.length) attemptPlans.push(cookieArgs);
 
-  // Useful fallback player clients for cloud/server IPs where default web client gets bot-check.
-  // android_vr is first — confirmed working on AWS datacenter IPs in 2026 without PO token.
+  // Fallback player clients ordered by reliability on AWS/GCP datacenter IPs.
+  // tv_embedded (YouTube TV embedded player) is least bot-checked on server IPs.
+  // android_vr, mweb, ios are secondary options. web requires po_token on server IPs.
   const youtubeFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
+    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
     ["--extractor-args", "youtube:player_client=android_vr"],
-    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-    ["--extractor-args", "youtube:player_client=web_embedded"],
-    ["--extractor-args", "youtube:player_client=ios"],
-    ["--extractor-args", "youtube:player_client=android"],
     ["--extractor-args", "youtube:player_client=mweb"],
-    ["--extractor-args", "youtube:player_client=android,web"],
-    ["--extractor-args", "youtube:player_client=android_vr,android"],
-    ["--extractor-args", "youtube:player_client=tv_embedded,android"],
-    ["--extractor-args", "youtube:player_client=ios,web"],
+    ["--extractor-args", "youtube:player_client=android_vr,mweb"],
+    ["--extractor-args", "youtube:player_client=ios"],
+    ["--extractor-args", "youtube:player_client=web_embedded"],
+    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
+    ["--extractor-args", "youtube:player_client=android"],
+    ["--extractor-args", "youtube:player_client=ios,web_embedded"],
+    ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
   ];
 
   let lastErr: Error | null = null;
@@ -617,6 +647,50 @@ function buildFormats(
     ...(audioFormat ? [audioFormat] : []),
   ];
 }
+
+// ─── Diagnostics endpoint ─────────────────────────────────────────────────
+// GET /api/youtube/diagnostics — shows yt-dlp config and what bypass methods
+// are active. Use this to debug bot-detection issues without SSH access.
+router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
+  const hasCookies = getYtdlpCookieArgs().length > 0;
+  const hasCookiesBase64 = !!YTDLP_COOKIES_BASE64;
+  const hasProxy = !!YTDLP_PROXY;
+  const hasPoToken = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
+
+  let ytdlpVersion = "unknown";
+  try {
+    ytdlpVersion = await new Promise<string>((resolve) => {
+      const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", "--version"], { env: PYTHON_ENV });
+      let out = "";
+      proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+      proc.on("close", () => resolve(out.trim() || "unknown"));
+      proc.on("error", () => resolve("unknown"));
+    });
+  } catch {}
+
+  const activeClient = hasPoToken
+    ? "web+web_embedded (po_token mode)"
+    : "tv_embedded,android_vr,mweb (server-IP mode)";
+
+  res.json({
+    ytdlpVersion,
+    activeClient,
+    bypassMethods: {
+      cookies: hasCookies,
+      cookiesFromEnvVar: hasCookiesBase64,
+      proxy: hasProxy,
+      poToken: hasPoToken,
+    },
+    proxy: hasProxy ? YTDLP_PROXY.replace(/:([^@:]+)@/, ":***@") : null,
+    recommendations: [
+      ...(!hasCookies ? ["Set YTDLP_COOKIES_BASE64 with base64-encoded YouTube cookies (most reliable fix for AWS IPs)"] : []),
+      ...(!hasPoToken ? ["Or set YTDLP_PO_TOKEN + YTDLP_VISITOR_DATA from youtube-trusted-session-generator"] : []),
+      ...(!hasProxy ? ["Or set YTDLP_PROXY to route through a residential/non-datacenter IP"] : []),
+    ],
+    cookieFilePath: YTDLP_COOKIES_FILE,
+    cookieFileExists: existsSync(YTDLP_COOKIES_FILE),
+  });
+});
 
 router.post("/youtube/info", async (req: Request, res: Response) => {
   const { url } = req.body as { url: string };

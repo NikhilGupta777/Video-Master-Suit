@@ -20,8 +20,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # ── pnpm ─────────────────────────────────────────────────────────────────────
 RUN npm install -g pnpm@10
 
-# ── yt-dlp ───────────────────────────────────────────────────────────────────
-RUN pip3 install --break-system-packages yt-dlp
+# ── yt-dlp (always install latest — YouTube bot detection bypasses update frequently) ─────
+RUN pip3 install --break-system-packages --upgrade yt-dlp
 
 # ── App source ────────────────────────────────────────────────────────────────
 WORKDIR /app

@@ -10,10 +10,16 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       BHAGWAT_PASSWORD: ${BHAGWAT_PASSWORD}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
-      # Optional: route yt-dlp through a proxy to bypass YouTube's EC2 IP block
+      # ── YouTube bot-detection bypass options (AWS/datacenter IPs are blocked by YouTube) ──
+      # OPTION 1 (easiest): Export cookies from a YouTube-logged-in Chrome browser using the
+      # "Get cookies.txt LOCALLY" extension, then base64-encode: base64 -w 0 cookies.txt
+      # Paste the result here. No file upload needed, just set and restart.
+      YTDLP_COOKIES_BASE64: ${YTDLP_COOKIES_BASE64:-}
+      # OPTION 2: Route yt-dlp through a residential/non-datacenter proxy
       # e.g. YTDLP_PROXY=socks5://user:pass@host:port
       YTDLP_PROXY: ${YTDLP_PROXY:-}
-      # Optional: YouTube po_token + visitor_data for bot-detection bypass
+      # OPTION 3: YouTube po_token + visitor_data (generate with youtube-trusted-session-generator)
+      # See: https://github.com/iv-org/youtube-trusted-session-generator
       YTDLP_PO_TOKEN: ${YTDLP_PO_TOKEN:-}
       YTDLP_VISITOR_DATA: ${YTDLP_VISITOR_DATA:-}
     depends_on:
