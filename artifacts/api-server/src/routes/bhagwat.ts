@@ -535,7 +535,8 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 } else {
-  YTDLP_BASE_ARGS.push("--extractor-args", "youtube:player_client=default,-android_sdkless");
+  // android_vr is confirmed working on AWS/datacenter IPs in 2026 without PO token.
+  YTDLP_BASE_ARGS.push("--extractor-args", "youtube:player_client=android_vr,web_embedded,default,-android_sdkless");
 }
 
 // Subtitle args (lighter — no fragment retries needed).
@@ -560,7 +561,7 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 } else {
-  YTDLP_SUBS_ARGS.push("--extractor-args", "youtube:player_client=default,-android_sdkless");
+  YTDLP_SUBS_ARGS.push("--extractor-args", "youtube:player_client=android_vr,web_embedded,default,-android_sdkless");
 }
 
 // YouTube block detection (same pattern as youtube.ts)
@@ -568,13 +569,15 @@ function isBhagwatYtBlocked(msg: string): boolean {
   return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(msg);
 }
 
-// Fallback player clients for cloud/EC2 IPs — mirrors youtube.ts order.
+// Fallback player clients for cloud/EC2 IPs — android_vr confirmed working on AWS IPs 2026.
 const YTDLP_CLOUD_FALLBACKS: string[][] = [
+  ["--extractor-args", "youtube:player_client=android_vr"],
+  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
   ["--extractor-args", "youtube:player_client=web_embedded"],
   ["--extractor-args", "youtube:player_client=ios"],
   ["--extractor-args", "youtube:player_client=android"],
   ["--extractor-args", "youtube:player_client=mweb"],
-  ["--extractor-args", "youtube:player_client=tv_embedded"],
+  ["--extractor-args", "youtube:player_client=android_vr,android"],
   ["--extractor-args", "youtube:player_client=tv_embedded,android"],
 ];
 

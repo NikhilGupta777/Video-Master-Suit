@@ -186,11 +186,11 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 } else {
+  // android_vr is the most reliable client on datacenter/AWS IPs in 2026.
   // Exclude dead android_sdkless client that YouTube phased out in 2025/2026.
-  // This prevents wasted attempts and reduces bot-detection surface.
   BASE_YTDLP_ARGS.push(
     "--extractor-args",
-    "youtube:player_client=default,-android_sdkless",
+    "youtube:player_client=android_vr,web_embedded,default,-android_sdkless",
   );
 }
 
@@ -269,15 +269,16 @@ async function runYtDlp(args: string[]): Promise<string> {
   if (cookieArgs.length) attemptPlans.push(cookieArgs);
 
   // Useful fallback player clients for cloud/server IPs where default web client gets bot-check.
-  // web_embedded is first — confirmed most reliable on datacenter IPs, no PO token required.
+  // android_vr is first — confirmed working on AWS datacenter IPs in 2026 without PO token.
   const youtubeFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
     ["--extractor-args", "youtube:player_client=web_embedded"],
     ["--extractor-args", "youtube:player_client=ios"],
     ["--extractor-args", "youtube:player_client=android"],
     ["--extractor-args", "youtube:player_client=mweb"],
-    ["--extractor-args", "youtube:player_client=tv_embedded"],
     ["--extractor-args", "youtube:player_client=android,web"],
-    ["--extractor-args", "youtube:player_client=android,web_safari"],
+    ["--extractor-args", "youtube:player_client=android_vr,android"],
     ["--extractor-args", "youtube:player_client=tv_embedded,android"],
     ["--extractor-args", "youtube:player_client=ios,web"],
   ];
