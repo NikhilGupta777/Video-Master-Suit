@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 } from "fs";
 import { join } from "path";
 import { spawn } from "child_process";
@@ -78,6 +78,13 @@ function isAiConfigured(): boolean {
 }
 
 function getGenAI(): GoogleGenAI | null {
+  // Prefer Replit Gemini integration credentials when available
+  if (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+    return new GoogleGenAI({
+      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+      httpOptions: { baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL },
+    });
+  }
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
   return new GoogleGenAI({ apiKey });

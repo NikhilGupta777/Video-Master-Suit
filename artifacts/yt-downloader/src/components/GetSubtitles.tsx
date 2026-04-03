@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
@@ -80,12 +80,23 @@ export function GetSubtitles() {
   const [srtFilename, setSrtFilename] = useState("subtitles.srt");
   const [originalSrt, setOriginalSrt] = useState<string | null>(null);
   const [originalFilename, setOriginalFilename] = useState<string | null>(null);
+  // The source language that was actually used (for labelling "Download Original")
+  const [jobSourceLang, setJobSourceLang] = useState<string>("auto");
   const [durationSecs, setDurationSecs] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Smooth 1-second tick so the countdown updates every second, not every poll
+  const [tick, setTick] = useState(0);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+
+  // Track the last step that was actually active (for correct error/cancelled rendering)
+  const lastGoodStepRef = useRef<string | null>(null);
+  // Track which input mode was used for THIS job (not the current UI toggle)
+  const jobInputModeRef = useRef<InputMode>("url");
+  // Track translateTo used for THIS job (not the current UI state)
+  const jobTranslateToRef = useRef<string>("none");
 
   // Store last submitted params for retry
   const lastUrlRef = useRef<string>("");
@@ -96,12 +107,43 @@ export function GetSubtitles() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Refs for click-outside detection on dropdowns
+  const langDropdownRef = useRef<HTMLDivElement>(null);
+  const translateDropdownRef = useRef<HTMLDivElement>(null);
+
   const { toast } = useToast();
 
-  const stepBase = inputMode === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE;
-  const stepOrder = translateTo !== "none"
-    ? [...stepBase, ...TRANSLATE_STEPS, "done"]
-    : [...stepBase, "done"];
+  // Build step order using the JOB's actual mode/translateTo, not current UI state
+  const jobStepBase = jobInputModeRef.current === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE;
+  const jobStepOrder = jobTranslateToRef.current !== "none"
+    ? [...jobStepBase, ...TRANSLATE_STEPS, "done"]
+    : [...jobStepBase, "done"];
+
+  // Click-outside handler for both dropdowns
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (langOpen && langDropdownRef.current && !langDropdownRef.current.contains(e.target as Node)) {
+        setLangOpen(false);
+      }
+      if (translateOpen && translateDropdownRef.current && !translateDropdownRef.current.contains(e.target as Node)) {
+        setTranslateOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [langOpen, translateOpen]);
+
+  // Smooth 1-second tick while a job is running, for countdown display
+  useEffect(() => {
+    if (loading) {
+      tickRef.current = setInterval(() => setTick((t) => t + 1), 1000);
+    } else {
+      if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    }
+    return () => { if (tickRef.current) clearInterval(tickRef.current); };
+  }, [loading]);
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -117,6 +159,11 @@ export function GetSubtitles() {
         if (data.durationSecs != null) setDurationSecs(data.durationSecs);
         setJobStatus(data.status);
         setJobMessage(data.message ?? STEP_LABELS[data.status] ?? "");
+
+        // Track last known good step for correct step-tracker rendering on error/cancel
+        if (data.status && !["error", "cancelled", "done"].includes(data.status)) {
+          lastGoodStepRef.current = data.status;
+        }
 
         if (data.status === "done") {
           stopPolling();
@@ -146,11 +193,19 @@ export function GetSubtitles() {
     setOriginalSrt(null);
     setOriginalFilename(null);
     setDurationSecs(null);
-    setJobStatus(mode === "url" ? "audio" : "uploading");
+    setTick(0);
+    const initialStatus = mode === "url" ? "audio" : "uploading";
+    setJobStatus(initialStatus);
     setJobMessage(mode === "url" ? "Downloading audio from YouTube..." : "Uploading to AI...");
     setJobError("");
     setJobId(null);
     setJobStartedAt(Date.now());
+    setJobSourceLang(lang);
+    lastGoodStepRef.current = initialStatus;
+
+    // Snapshot the job's mode and translateTo for step tracker
+    jobInputModeRef.current = mode;
+    jobTranslateToRef.current = trans;
 
     // Save for retry
     lastUrlRef.current = urlVal;
@@ -249,27 +304,45 @@ export function GetSubtitles() {
 
   const reset = () => {
     stopPolling();
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     setJobId(null); setJobStatus(null); setJobMessage(""); setJobError("");
     setSrtContent(null); setOriginalSrt(null); setOriginalFilename(null);
-    setDurationSecs(null); setLoading(false); setJobStartedAt(null);
+    setDurationSecs(null); setLoading(false); setJobStartedAt(null); setTick(0);
+    lastGoodStepRef.current = null;
   };
 
   const selectedLang = LANGUAGES.find((l) => l.value === language);
-  const isRunning = loading && jobStatus && jobStatus !== "done" && jobStatus !== "error" && jobStatus !== "cancelled";
+  const isRunning = loading && jobStatus && !["done", "error", "cancelled"].includes(jobStatus);
 
-  // Time estimate display
-  const estimatedTotal = durationSecs != null ? estimateSeconds(durationSecs, translateTo !== "none") : null;
+  // Time estimate — uses `tick` so it updates every second smoothly
+  const estimatedTotal = durationSecs != null ? estimateSeconds(durationSecs, jobTranslateToRef.current !== "none") : null;
   const elapsed = jobStartedAt ? Math.floor((Date.now() - jobStartedAt) / 1000) : 0;
-  const remaining = estimatedTotal != null ? Math.max(0, estimatedTotal - elapsed) : null;
+  // suppress tick warning — it's intentionally used to trigger re-render
+  void tick;
+  const remaining = estimatedTotal != null ? estimatedTotal - elapsed : null;
 
-  const durationLabel = durationSecs != null
-    ? `Audio: ${formatDuration(durationSecs)}`
-    : null;
-  const remainingLabel = remaining != null && isRunning && elapsed > 5
-    ? `~${formatDuration(remaining)} remaining`
-    : null;
+  const durationLabel = durationSecs != null ? `Audio: ${formatDuration(durationSecs)}` : null;
+  const remainingLabel = (() => {
+    if (!isRunning || remaining === null || elapsed < 5) return null;
+    if (remaining <= 5) return "Almost done...";
+    return `~${formatDuration(remaining)} remaining`;
+  })();
 
   const entryCount = srtContent?.split("\n\n").filter(Boolean).length ?? 0;
+
+  // Original language label for download button (e.g. "Download Odia Original")
+  const sourceLangLabel = jobSourceLang === "auto"
+    ? "Original"
+    : `${jobSourceLang} Original`;
+
+  // ── Step tracker rendering ────────────────────────────────────────────────
+  // Always use the job's frozen stepOrder (not live translateTo/inputMode)
+  // When status is error/cancelled, use lastGoodStep to show which steps completed
+  const effectiveStatus = ["error", "cancelled"].includes(jobStatus ?? "")
+    ? lastGoodStepRef.current ?? jobStepOrder[0]
+    : jobStatus;
+
+  const currentStepIdx = jobStepOrder.indexOf(effectiveStatus ?? "");
 
   return (
     <div className="w-full max-w-2xl mx-auto flex flex-col gap-6">
@@ -314,18 +387,22 @@ export function GetSubtitles() {
       {/* Language + Translation pickers row */}
       <div className="flex flex-col sm:flex-row gap-3">
 
-        {/* Audio language picker */}
-        <div className="relative flex-1">
+        {/* Audio language picker — locked while job runs */}
+        <div className="relative flex-1" ref={langDropdownRef}>
           <button
-            onClick={() => { setLangOpen((o) => !o); setTranslateOpen(false); }}
-            className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80 hover:bg-white/8 hover:border-white/20 transition-all w-full"
+            onClick={() => { if (!isRunning) { setLangOpen((o) => !o); setTranslateOpen(false); } }}
+            disabled={!!isRunning}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80 transition-all w-full",
+              isRunning ? "opacity-50 cursor-not-allowed" : "hover:bg-white/8 hover:border-white/20 cursor-pointer"
+            )}
           >
             <Globe className="w-4 h-4 text-teal-400 shrink-0" />
             <span className="flex-1 text-left">{selectedLang?.label ?? "Auto-detect"}</span>
             <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", langOpen && "rotate-180")} />
           </button>
           <AnimatePresence>
-            {langOpen && (
+            {langOpen && !isRunning && (
               <motion.div
                 initial={{ opacity: 0, y: -8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -350,25 +427,28 @@ export function GetSubtitles() {
           </AnimatePresence>
         </div>
 
-        {/* Translation target picker */}
-        <div className="relative flex-1">
+        {/* Translation target picker — locked while job runs */}
+        <div className="relative flex-1" ref={translateDropdownRef}>
           <button
-            onClick={() => { setTranslateOpen((o) => !o); setLangOpen(false); }}
+            onClick={() => { if (!isRunning) { setTranslateOpen((o) => !o); setLangOpen(false); } }}
+            disabled={!!isRunning}
             className={cn(
               "flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm transition-all w-full",
-              translateTo !== "none"
-                ? "bg-violet-500/15 border-violet-500/40 text-violet-300 hover:bg-violet-500/20"
-                : "bg-white/5 border-white/10 text-white/80 hover:bg-white/8 hover:border-white/20"
+              isRunning
+                ? "opacity-50 cursor-not-allowed bg-white/5 border-white/10 text-white/80"
+                : translateTo !== "none"
+                  ? "bg-violet-500/15 border-violet-500/40 text-violet-300 hover:bg-violet-500/20 cursor-pointer"
+                  : "bg-white/5 border-white/10 text-white/80 hover:bg-white/8 hover:border-white/20 cursor-pointer"
             )}
           >
-            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" ? "text-violet-400" : "text-white/30")} />
+            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" && !isRunning ? "text-violet-400" : "text-white/30")} />
             <span className="flex-1 text-left">
               {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
             </span>
             <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", translateOpen && "rotate-180")} />
           </button>
           <AnimatePresence>
-            {translateOpen && (
+            {translateOpen && !isRunning && (
               <motion.div
                 initial={{ opacity: 0, y: -8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -416,13 +496,13 @@ export function GetSubtitles() {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="Paste YouTube URL..."
-                disabled={isRunning as boolean}
+                disabled={!!isRunning}
                 className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-3 text-white placeholder:text-white/30 text-sm focus:outline-none focus:border-teal-500/50 transition-colors disabled:opacity-50"
               />
             </div>
             <Button
               type="submit"
-              disabled={!url.trim() || (isRunning as boolean)}
+              disabled={!url.trim() || !!isRunning}
               className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-6 shrink-0 shadow-[0_0_16px_rgba(20,184,166,0.25)]"
             >
               {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : "Generate SRT"}
@@ -441,9 +521,11 @@ export function GetSubtitles() {
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleFileDrop}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => !isRunning && fileInputRef.current?.click()}
               className={cn(
-                "relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all",
+                "relative border-2 border-dashed rounded-2xl p-8 text-center transition-all",
+                isRunning ? "cursor-default opacity-60"
+                  : "cursor-pointer",
                 isDragging
                   ? "border-teal-500/70 bg-teal-500/10"
                   : file
@@ -469,13 +551,15 @@ export function GetSubtitles() {
                     <p className="text-white font-semibold text-sm truncate">{file.name}</p>
                     <p className="text-white/40 text-xs mt-0.5">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setFile(null); reset(); }}
-                    className="ml-auto p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  {!isRunning && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setFile(null); reset(); }}
+                      className="ml-auto p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -488,7 +572,7 @@ export function GetSubtitles() {
 
             <Button
               onClick={handleFileUpload}
-              disabled={!file || (isRunning as boolean)}
+              disabled={!file || !!isRunning}
               className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl shadow-[0_0_16px_rgba(20,184,166,0.25)] w-full sm:w-auto sm:self-end"
             >
               {isRunning ? (
@@ -510,24 +594,47 @@ export function GetSubtitles() {
             exit={{ opacity: 0, y: -8 }}
             className="glass-panel rounded-2xl p-5 flex flex-col gap-4"
           >
-            {/* Step indicators — context-aware based on input mode */}
+            {/* Step indicators — uses job's frozen stepOrder + last known good step */}
             <div className="flex items-center gap-2">
-              {stepOrder.map((step, i) => {
-                const currentIdx = stepOrder.indexOf(jobStatus ?? (inputMode === "url" ? "audio" : "uploading"));
-                const isDone = i < currentIdx || jobStatus === "done";
-                const isActive = i === currentIdx && jobStatus !== "done" && jobStatus !== "error" && jobStatus !== "cancelled";
+              {jobStepOrder.map((step, i) => {
+                const isErrorOrCancelled = ["error", "cancelled"].includes(jobStatus ?? "");
+                const isDone = jobStatus === "done"
+                  ? true
+                  : isErrorOrCancelled
+                    ? i < currentStepIdx
+                    : i < currentStepIdx;
+                const isActive = !isErrorOrCancelled && i === currentStepIdx && jobStatus !== "done";
+                const isFailed = isErrorOrCancelled && i === currentStepIdx;
+                const isStoppedAt = jobStatus === "cancelled" && i === currentStepIdx;
+
                 return (
                   <React.Fragment key={step}>
                     <div className={cn(
                       "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border transition-all",
-                      isDone ? "bg-teal-500/30 border-teal-500/50 text-teal-300"
-                        : isActive ? "bg-teal-600/20 border-teal-500/40 text-teal-400 animate-pulse"
-                          : "bg-white/5 border-white/10 text-white/20"
+                      isDone
+                        ? "bg-teal-500/30 border-teal-500/50 text-teal-300"
+                        : isActive
+                          ? "bg-teal-600/20 border-teal-500/40 text-teal-400 animate-pulse"
+                          : isFailed && !isStoppedAt
+                            ? "bg-red-500/20 border-red-500/40 text-red-400"
+                            : isStoppedAt
+                              ? "bg-yellow-500/20 border-yellow-500/40 text-yellow-400"
+                              : "bg-white/5 border-white/10 text-white/20"
                     )}>
-                      {isDone ? <CheckCircle2 className="w-3.5 h-3.5" /> : i + 1}
+                      {isDone
+                        ? <CheckCircle2 className="w-3.5 h-3.5" />
+                        : isFailed && !isStoppedAt
+                          ? <AlertCircle className="w-3.5 h-3.5" />
+                          : isStoppedAt
+                            ? <StopCircle className="w-3.5 h-3.5" />
+                            : i + 1
+                      }
                     </div>
-                    {i < stepOrder.length - 1 && (
-                      <div className={cn("flex-1 h-[2px] rounded transition-all", isDone ? "bg-teal-500/40" : "bg-white/8")} />
+                    {i < jobStepOrder.length - 1 && (
+                      <div className={cn(
+                        "flex-1 h-[2px] rounded transition-all",
+                        isDone ? "bg-teal-500/40" : "bg-white/8"
+                      )} />
                     )}
                   </React.Fragment>
                 );
@@ -568,7 +675,7 @@ export function GetSubtitles() {
                     className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-5 shadow-[0_0_14px_rgba(20,184,166,0.3)]"
                   >
                     <Download className="w-4 h-4 mr-2" />
-                    {originalSrt ? `Download ${translateTo}` : "Download SRT"}
+                    {originalSrt ? `Download ${jobTranslateToRef.current}` : "Download SRT"}
                   </Button>
 
                   {originalSrt && (
@@ -578,7 +685,7 @@ export function GetSubtitles() {
                       className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5"
                     >
                       <Download className="w-4 h-4 mr-2" />
-                      Download Original
+                      Download {sourceLangLabel}
                     </Button>
                   )}
 
@@ -602,31 +709,34 @@ export function GetSubtitles() {
                       ? `${durationLabel} · ${remainingLabel}`
                       : durationLabel
                         ? `${durationLabel} · Estimating time...`
-                        : "Estimating duration..."}
+                        : "Processing audio..."}
                   </p>
                 </div>
                 {/* Cancel button */}
                 <button
                   onClick={handleCancel}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-red-400 hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 transition-all"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-red-400 hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 transition-all shrink-0"
                 >
                   <X className="w-3.5 h-3.5" /> Cancel
                 </button>
               </div>
             )}
 
-            {/* SRT preview — expanded to 25 entries with proper scroll */}
+            {/* SRT preview — 25 entries, scrollable */}
             {srtContent && (
-              <div className="rounded-xl bg-black/30 border border-white/8 p-4 max-h-64 overflow-y-auto">
-                <div className="flex items-center justify-between mb-2">
+              <div className="rounded-xl bg-black/30 border border-white/8 overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-white/8">
                   <p className="text-white/30 text-xs font-medium">
                     Preview · {Math.min(25, entryCount)} of {entryCount} entries
                   </p>
+                  <p className="text-white/20 text-xs">scroll to see more</p>
                 </div>
-                <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed">
-                  {srtContent.split("\n\n").filter(Boolean).slice(0, 25).join("\n\n")}
-                  {entryCount > 25 && `\n\n... and ${entryCount - 25} more entries`}
-                </pre>
+                <div className="p-4 max-h-64 overflow-y-auto">
+                  <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed">
+                    {srtContent.split("\n\n").filter(Boolean).slice(0, 25).join("\n\n")}
+                    {entryCount > 25 && `\n\n... and ${entryCount - 25} more entries`}
+                  </pre>
+                </div>
               </div>
             )}
 
