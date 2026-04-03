@@ -283,6 +283,36 @@ function cleanupHallucinatedEntries(srt: string): string {
     .join("\n\n") + "\n";
 }
 
+// ── Restore timestamps from original SRT into translated SRT ─────────────────
+// Gemini sometimes reformats timestamps during translation (e.g. "00:10:50,066"
+// becomes "10:50:000,000"). Since timestamps must NEVER change during translation,
+// we overwrite every timestamp in the translated SRT with the corresponding
+// timestamp from the original corrected SRT, matched by entry number.
+function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
+  const parseEntries = (srt: string) => {
+    return srt.trim().split(/\n\n+/).map((block) => {
+      const lines = block.trim().split("\n");
+      if (lines.length < 3) return null;
+      const num = parseInt(lines[0].trim(), 10);
+      if (isNaN(num)) return null;
+      return { num, timestamp: lines[1].trim(), text: lines.slice(2).join("\n") };
+    }).filter((e): e is { num: number; timestamp: string; text: string } => e !== null);
+  };
+
+  const origEntries = parseEntries(originalSrt);
+  const transEntries = parseEntries(translatedSrt);
+
+  const timestampMap = new Map<number, string>();
+  for (const e of origEntries) timestampMap.set(e.num, e.timestamp);
+
+  const restored = transEntries.map((e) => {
+    const ts = timestampMap.get(e.num) ?? e.timestamp;
+    return `${e.num}\n${ts}\n${e.text}`;
+  });
+
+  return restored.join("\n\n") + "\n";
+}
+
 // ── Get audio duration via ffprobe ───────────────────────────────────────────
 function getAudioDuration(audioPath: string): Promise<number> {
   return new Promise((resolve) => {
@@ -456,9 +486,11 @@ async function processAudio(
       });
 
       const translatedRaw = translationPass.text?.trim() ?? "";
-      const translatedSrt = translatedRaw.length > 10
+      const translatedClean = translatedRaw.length > 10
         ? translatedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
         : correctedFinalSrt;
+      // Always restore original timestamps — Gemini sometimes garbles them during translation
+      const translatedSrt = restoreTimestamps(correctedFinalSrt, translatedClean);
 
       // Step 5: Verify the translation (text-only, no audio needed)
       job.status = "verifying";
@@ -480,9 +512,11 @@ async function processAudio(
       });
 
       const verifiedRaw = verifyPass.text?.trim() ?? "";
-      const verifiedSrt = verifiedRaw.length > 10
+      const verifiedClean = verifiedRaw.length > 10
         ? verifiedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
         : translatedSrt;
+      // Restore timestamps again after verification pass (same Gemini behaviour)
+      const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
       const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
       job.status = "done";
