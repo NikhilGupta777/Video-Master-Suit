@@ -16,15 +16,18 @@ const PYTHON_ENV = { ...process.env, PYTHONUNBUFFERED: "1" };
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 
 // ── In-memory job store ──────────────────────────────────────────────────────
-type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error";
+type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error" | "cancelled";
 interface SrtJob {
   status: JobStatus;
   message: string;
   srt?: string;
+  originalSrt?: string;
   error?: string;
   filename: string;
   createdAt: number;
   translateTo?: string;
+  cancelled?: boolean;
+  durationSecs?: number;
 }
 const jobs = new Map<string, SrtJob>();
 
@@ -110,7 +113,8 @@ STRICT SRT FORMAT RULES:
 4. If there is a quiet section or pause, keep listening — do not stop — transcribe what comes after
 5. For unclear words, make your best guess based on context and language
 6. Do NOT translate — keep the original spoken language
-7. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
+7. Do NOT write non-speech annotations like [music], [background noise], [silence], [applause], [inaudible] etc. — only transcribe actual spoken words
+8. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
 
 Example of CORRECT format (note all timestamps have HH:MM:SS,mmm):
 1
@@ -185,7 +189,8 @@ CRITICAL RULES:
 5. Produce natural, fluent ${toLanguage} — not a word-for-word literal translation
 6. Preserve the meaning, tone, and context of the original speech
 7. Keep names of people, places, and proper nouns as they are (or use the standard ${toLanguage} spelling)
-8. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
+8. Each subtitle must fit on 1-2 lines, max ~42 characters per line — split long translations naturally at phrase boundaries
+9. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
 
 Here is the SRT to translate:
 ---
@@ -233,18 +238,23 @@ Return the fully verified and corrected ${toLanguage} SRT:`;
 function normalizeTs(ts: string): string {
   const [timePart, ms = "000"] = ts.split(",");
   const parts = timePart.split(":");
-  let h: string, m: string, s: string;
+  let hRaw: string, mRaw: string, sRaw: string;
   if (parts.length === 3) {
-    [h, m, s] = parts;
+    [hRaw, mRaw, sRaw] = parts;
   } else if (parts.length === 2) {
-    // MM:SS — Gemini omitted the hours component
-    h = "00";
-    [m, s] = parts;
+    hRaw = "00";
+    [mRaw, sRaw] = parts;
   } else {
-    // Just seconds — shouldn't happen but handle it
-    h = "00"; m = "00"; s = parts[0];
+    hRaw = "00"; mRaw = "00"; sRaw = parts[0];
   }
-  return `${h.padStart(2, "0")}:${m.padStart(2, "0")}:${s.padStart(2, "0")},${ms.padStart(3, "0")}`;
+  // Carry-over: seconds >= 60 → minutes, minutes >= 60 → hours
+  let hh = parseInt(hRaw, 10) || 0;
+  let mm = parseInt(mRaw, 10) || 0;
+  let ss = parseInt(sRaw, 10) || 0;
+  const msNum = parseInt(ms, 10) || 0;
+  mm += Math.floor(ss / 60); ss = ss % 60;
+  hh += Math.floor(mm / 60); mm = mm % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")},${String(msNum).padStart(3, "0")}`;
 }
 
 function normalizeSrtTimestamps(srt: string): string {
@@ -313,6 +323,60 @@ function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
   return restored.join("\n\n") + "\n";
 }
 
+// ── Filter entries beyond audio duration ─────────────────────────────────────
+function filterOutOfBoundsEntries(srt: string, durationSecs: number): string {
+  if (durationSecs <= 0) return srt;
+  const entries = srt.trim().split(/\n\n+/);
+  const valid: string[] = [];
+  for (const entry of entries) {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) continue;
+    const tsMatch = lines[1].match(/^(\d{2}):(\d{2}):(\d{2}),\d{3}\s*-->/);
+    if (!tsMatch) { valid.push(entry.trim()); continue; }
+    const entrySecs = parseInt(tsMatch[1], 10) * 3600 + parseInt(tsMatch[2], 10) * 60 + parseInt(tsMatch[3], 10);
+    if (entrySecs <= durationSecs + 5) valid.push(entry.trim()); // 5s tolerance
+  }
+  return valid.map((entry, i) => {
+    const lines = entry.split("\n");
+    lines[0] = String(i + 1);
+    return lines.join("\n");
+  }).join("\n\n") + "\n";
+}
+
+// ── Basic SRT validity check ──────────────────────────────────────────────────
+function validateSrt(srt: string): boolean {
+  const entries = srt.trim().split(/\n\n+/).filter(Boolean);
+  if (entries.length === 0) return false;
+  const firstLines = entries[0].trim().split("\n");
+  if (firstLines.length < 3) return false;
+  if (!/^\d+$/.test(firstLines[0].trim())) return false;
+  if (!/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/.test(firstLines[1])) return false;
+  return true;
+}
+
+// ── Preprocess audio with ffmpeg (16kHz mono WAV) ────────────────────────────
+function preprocessAudio(inputPath: string): Promise<{ path: string; cleanup: () => void }> {
+  const outputPath = inputPath + "_16k.wav";
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-y", "-i", inputPath,
+      "-ac", "1",           // mono
+      "-ar", "16000",       // 16 kHz
+      "-c:a", "pcm_s16le",  // 16-bit PCM
+      outputPath,
+    ]);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve({ path: outputPath, cleanup: () => { try { rmSync(outputPath); } catch {} } });
+      } else {
+        // Fallback: use original if ffmpeg fails
+        resolve({ path: inputPath, cleanup: () => {} });
+      }
+    });
+    proc.on("error", () => resolve({ path: inputPath, cleanup: () => {} }));
+  });
+}
+
 // ── Get audio duration via ffprobe ───────────────────────────────────────────
 function getAudioDuration(audioPath: string): Promise<number> {
   return new Promise((resolve) => {
@@ -360,19 +424,27 @@ async function processAudio(
   }
 
   let geminiFileName: string | null = null;
+  let preprocessCleanup: (() => void) | null = null;
 
   try {
-    const ext = audioPath.split(".").pop()!.toLowerCase();
+    // Preprocess audio to 16kHz mono WAV for smaller upload and better accuracy
+    const preprocessed = await preprocessAudio(audioPath);
+    preprocessCleanup = preprocessed.cleanup;
+    const processedPath = preprocessed.path;
+
+    const ext = processedPath.split(".").pop()!.toLowerCase();
     const mimeType = audioMimeType(ext);
-    const audioBuffer = readFileSync(audioPath);
+    const audioBuffer = readFileSync(processedPath);
     const audioBlob = new Blob([audioBuffer], { type: mimeType });
 
     // Measure exact audio duration so we can tell Gemini to stay within bounds
-    const durationSecs = await getAudioDuration(audioPath);
+    const durationSecs = await getAudioDuration(processedPath);
     const durationSrt = durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
+    job.durationSecs = durationSecs;
     logger.info({ durationSecs, durationSrt }, "Audio duration measured");
 
     // Step 1: Upload to Gemini Files API
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
     job.status = "uploading";
     job.message = "Uploading audio to AI...";
 
@@ -400,6 +472,7 @@ async function processAudio(
     const fileUri: string = fileInfo.uri;
 
     // Step 2: Generate raw SRT
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
     job.status = "generating";
     job.message = "AI is transcribing audio...";
 
@@ -433,6 +506,7 @@ async function processAudio(
       .trim();
 
     // Step 3: Auto-correction pass — same audio + draft SRT → Gemini corrects mistakes
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
     job.status = "correcting";
     job.message = "AI is auto-correcting errors...";
 
@@ -460,11 +534,23 @@ async function processAudio(
       ? correctedSrt.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
       : cleanedRaw;
 
-    // Normalize malformed timestamps then strip any hallucinated tail entries
-    const correctedFinalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal));
+    // Normalize malformed timestamps, filter out-of-bounds entries, strip hallucinations
+    const correctedFinalSrt = filterOutOfBoundsEntries(
+      cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)),
+      durationSecs,
+    );
+
+    // Validate the SRT before proceeding
+    if (!validateSrt(correctedFinalSrt)) {
+      job.status = "error";
+      job.error = "AI returned an invalid subtitle file — please try again";
+      return;
+    }
 
     // Step 4 (optional): Translate the corrected SRT
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
     if (translateTo && translateTo !== "none") {
+      job.originalSrt = correctedFinalSrt;
       job.status = "translating";
       job.message = `Translating subtitles to ${translateTo}...`;
 
@@ -490,6 +576,7 @@ async function processAudio(
       const translatedSrt = restoreTimestamps(correctedFinalSrt, translatedClean);
 
       // Step 5: Verify the translation (text-only, no audio needed)
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
       job.status = "verifying";
       job.message = `Verifying ${translateTo} translation...`;
 
@@ -525,11 +612,16 @@ async function processAudio(
     }
   } catch (err: any) {
     logger.error({ err }, "SRT generation error");
-    job.status = "error";
-    job.error = err.message || "Failed to generate subtitles";
+    if (job.status !== "cancelled") {
+      job.status = "error";
+      job.error = err.message || "Failed to generate subtitles";
+    }
   } finally {
     if (geminiFileName) {
       try { await genAI.files.delete({ name: geminiFileName }); } catch {}
+    }
+    if (preprocessCleanup) {
+      try { preprocessCleanup(); } catch {}
     }
     if (cleanup) {
       try { cleanup(); } catch {}
@@ -570,7 +662,8 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
     const job = jobs.get(jobId)!;
     try {
       mkdirSync(audioDir, { recursive: true });
-      const audioPattern = join(audioDir, "audio.%(ext)s");
+      // Use video title in filename so the downloaded SRT has a meaningful name
+      const audioPattern = join(audioDir, "%(title)s.%(ext)s");
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn(PYTHON_BIN, [
