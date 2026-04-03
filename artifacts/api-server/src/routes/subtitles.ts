@@ -149,6 +149,16 @@ ${rawSrt}
 Now listen to the audio and return the fully corrected SRT:`;
 }
 
+// ── Normalize SRT timestamps ─────────────────────────────────────────────────
+// Fixes single-digit minutes/seconds like "01:00:2,700" → "01:00:02,700"
+function normalizeSrtTimestamps(srt: string): string {
+  return srt.replace(
+    /(\d{2}):(\d{1,2}):(\d{1,2}),(\d{3})/g,
+    (_m, h, mm, ss, ms) =>
+      `${h}:${mm.padStart(2, "0")}:${ss.padStart(2, "0")},${ms}`,
+  );
+}
+
 // ── Core processing function ─────────────────────────────────────────────────
 async function processAudio(
   jobId: string,
@@ -253,9 +263,12 @@ async function processAudio(
     const correctedSrt = secondPass.text?.trim() ?? "";
 
     // If the correction pass fails or returns garbage, fall back to the first pass
-    const finalSrt = (correctedSrt && correctedSrt.length > 10)
+    const rawFinal = (correctedSrt && correctedSrt.length > 10)
       ? correctedSrt.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
       : cleanedRaw;
+
+    // Normalize any malformed timestamps (e.g. single-digit seconds "01:00:2,700")
+    const finalSrt = normalizeSrtTimestamps(rawFinal);
 
     job.status = "done";
     job.message = "Subtitles ready!";
