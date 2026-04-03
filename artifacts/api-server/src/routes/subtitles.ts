@@ -84,33 +84,47 @@ function buildSrtPrompt(language: string, durationSrt: string): string {
       ? "The audio may be in any language — transcribe it in the original language spoken, do NOT translate."
       : `The audio is in ${language}. Transcribe it in ${language} exactly as spoken — do NOT translate.`;
 
-  return `You are a professional subtitle creator. Listen to the ENTIRE audio carefully and produce a complete, accurate SRT subtitle file.
+  return `You are a professional subtitle creator. Listen to the ENTIRE audio from start to finish and produce a complete, accurate SRT subtitle file.
 
 ${langNote}
 
-AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. Do NOT generate any timestamp beyond ${durationSrt}.
+AUDIO DURATION: The audio is exactly ${durationSrt} long. You MUST transcribe ALL speech from 00:00:00 all the way to ${durationSrt}. Do NOT stop early. Even if there are quiet sections or pauses, continue listening — more speech follows.
+
+CRITICAL TIMESTAMP FORMAT:
+- Every timestamp MUST use HH:MM:SS,mmm format with ALL THREE parts separated by colons
+- CORRECT: 00:01:23,456  (hours:minutes:seconds,milliseconds)
+- WRONG:   01:23,456     (missing hours — NEVER use this format)
+- WRONG:   1:23,456      (missing hours — NEVER use this format)
+- The hours part is ALWAYS required, even when it is 00
+- Use COMMA for milliseconds separator (not dot)
+- All timestamps MUST be within 00:00:00,000 to ${durationSrt},000
 
 STRICT SRT FORMAT RULES:
 1. Each entry has exactly 3 parts, followed by a blank line:
    (a) A sequential number (1, 2, 3 ...)
-   (b) A timestamp: HH:MM:SS,mmm --> HH:MM:SS,mmm  (use COMMA for milliseconds, NOT dot)
+   (b) A timestamp line: HH:MM:SS,mmm --> HH:MM:SS,mmm
    (c) The spoken text — 1 to 2 lines, max ~42 characters per line
 2. Each subtitle should cover 3-7 seconds of audio
-3. Transcribe EVERY word — do not skip or summarize anything
-4. For unclear words, make your best guess based on context and language
-5. Do NOT translate — keep the original spoken language
-6. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
+3. Transcribe EVERY word spoken — do not skip, skip sections, or summarize anything
+4. If there is a quiet section or pause, keep listening — do not stop — transcribe what comes after
+5. For unclear words, make your best guess based on context and language
+6. Do NOT translate — keep the original spoken language
+7. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
 
-Example of correct format:
+Example of CORRECT format (note all timestamps have HH:MM:SS,mmm):
 1
 00:00:01,000 --> 00:00:04,500
 First line of speech here.
 
 2
-00:00:04,600 --> 00:00:08,200
-Second subtitle entry text.
+00:01:04,600 --> 00:01:08,200
+Speech that starts at one minute four seconds.
 
-Now transcribe the entire audio:`;
+3
+00:10:22,300 --> 00:10:26,100
+Speech near the ten-minute mark.
+
+Now transcribe the ENTIRE audio from beginning to end:`;
 }
 
 function buildCorrectionPrompt(rawSrt: string, language: string, durationSrt: string): string {
@@ -123,45 +137,96 @@ function buildCorrectionPrompt(rawSrt: string, language: string, durationSrt: st
 
 ${langNote}
 
-AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. If you see any timestamp beyond ${durationSrt}, it is a hallucination — fix it to match the actual audio timing.
+AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. If you see any timestamp beyond ${durationSrt}, it is a hallucination — fix it.
 
-Your task: Listen to the ENTIRE audio very carefully, then fix ALL errors in the SRT file.
+CRITICAL TIMESTAMP FORMAT:
+- Every timestamp MUST use HH:MM:SS,mmm format with ALL THREE parts (hours:minutes:seconds,milliseconds)
+- CORRECT: 00:01:23,456  — WRONG: 01:23,456 (missing hours) — WRONG: 1:23,456 (missing hours)
+- The hours part is ALWAYS required, even when it is 00
+
+IMPORTANT: The draft SRT may be INCOMPLETE — it may only cover part of the audio. Listen to the ENTIRE audio from start to ${durationSrt} and ADD any speech that is missing from the draft. Do not stop at the last entry of the draft if there is more speech in the audio.
+
+Your task: Listen to the ENTIRE audio, fix ALL errors in the SRT, and add any missing speech.
 
 Common errors to fix:
 - Wrong words (mishearings, similar-sounding words mixed up)
 - Missing words or phrases that are clearly spoken but not in the SRT
 - Hallucinated words (text in the SRT that is NOT actually spoken in the audio)
-- Incorrect use of foreign language words when the correct native word was spoken (e.g., English "to" written instead of the correct native particle)
 - Wrong word forms (e.g., wrong verb endings, missing particles/suffixes)
-- Filler sounds or stumbles mistakenly transcribed as real words
-- Timestamp mismatches (subtitle appearing too early or too late by more than 0.5 seconds)
-- Timestamps that go BEYOND the audio duration (hallucinated timestamps — correct them)
-- Incorrect word order
+- Timestamp mismatches (subtitle appearing too early or too late)
+- Timestamps using wrong format (MM:SS,mmm instead of HH:MM:SS,mmm — fix these)
+- Timestamps that go BEYOND the audio duration
+- MISSING ENTRIES: speech that occurs after the last SRT entry — add them
 
 IMPORTANT RULES:
 - Keep the exact same SRT format (number, timestamp, text, blank line)
-- Preserve all correct entries exactly as they are — only change what is wrong
-- Fix any timestamp that exceeds ${durationSrt}
+- Re-number entries sequentially from 1 after adding missing entries
 - Do NOT add translation or explanations
-- Do NOT summarize or shorten any entries
-- Return ONLY the corrected SRT content — no explanations, no markdown fences, no extra text
+- Return ONLY the corrected and completed SRT content — no explanations, no markdown fences
 
-Here is the draft SRT to correct:
+Here is the draft SRT to correct and complete:
 ---
 ${rawSrt}
 ---
 
-Now listen to the audio and return the fully corrected SRT:`;
+Now listen to the full audio from 00:00:00 to ${durationSrt} and return the fully corrected and completed SRT:`;
 }
 
 // ── Normalize SRT timestamps ─────────────────────────────────────────────────
-// Fixes single-digit minutes/seconds like "01:00:2,700" → "01:00:02,700"
+// Fixes two classes of Gemini timestamp mistakes:
+//   1. Missing hours: "01:23,456" → "00:01:23,456"  (MM:SS,mmm → HH:MM:SS,mmm)
+//   2. Single-digit parts: "00:1:2,700" → "00:01:02,700"
+function normalizeTs(ts: string): string {
+  const [timePart, ms = "000"] = ts.split(",");
+  const parts = timePart.split(":");
+  let h: string, m: string, s: string;
+  if (parts.length === 3) {
+    [h, m, s] = parts;
+  } else if (parts.length === 2) {
+    // MM:SS — Gemini omitted the hours component
+    h = "00";
+    [m, s] = parts;
+  } else {
+    // Just seconds — shouldn't happen but handle it
+    h = "00"; m = "00"; s = parts[0];
+  }
+  return `${h.padStart(2, "0")}:${m.padStart(2, "0")}:${s.padStart(2, "0")},${ms.padStart(3, "0")}`;
+}
+
 function normalizeSrtTimestamps(srt: string): string {
+  // Replace every timestamp line: "START --> END"
   return srt.replace(
-    /(\d{2}):(\d{1,2}):(\d{1,2}),(\d{3})/g,
-    (_m, h, mm, ss, ms) =>
-      `${h}:${mm.padStart(2, "0")}:${ss.padStart(2, "0")},${ms}`,
+    /^([\d:,]+)\s*-->\s*([\d:,]+)$/gm,
+    (_m, start, end) => `${normalizeTs(start.trim())} --> ${normalizeTs(end.trim())}`,
   );
+}
+
+// ── Strip hallucinated entries at end of SRT ─────────────────────────────────
+// When Gemini hits the token limit it sometimes repeats a word hundreds of times.
+// Remove any entry whose text has a single unique word repeated >10 times.
+function cleanupHallucinatedEntries(srt: string): string {
+  const entries = srt.trim().split(/\n\n+/);
+  const valid: string[] = [];
+  for (const entry of entries) {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) continue;
+    const text = lines.slice(2).join(" ");
+    const words = text.trim().split(/\s+/);
+    const unique = new Set(words);
+    // Skip entry if >80% of words are the same word (and there are many words)
+    if (words.length > 10 && unique.size <= 2) continue;
+    // Also skip if the entry line doesn't start with a number
+    if (!/^\d+$/.test(lines[0].trim())) continue;
+    valid.push(entry.trim());
+  }
+  // Re-number the valid entries sequentially
+  return valid
+    .map((entry, i) => {
+      const lines = entry.split("\n");
+      lines[0] = String(i + 1);
+      return lines.join("\n");
+    })
+    .join("\n\n") + "\n";
 }
 
 // ── Get audio duration via ffprobe ───────────────────────────────────────────
@@ -264,7 +329,11 @@ async function processAudio(
           ],
         },
       ],
-      config: { temperature: 0.1, maxOutputTokens: 65536 },
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 65536,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
 
     const rawSrt = firstPass.text?.trim() ?? "";
@@ -294,7 +363,11 @@ async function processAudio(
           ],
         },
       ],
-      config: { temperature: 0.1, maxOutputTokens: 65536 },
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 65536,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
 
     const correctedSrt = secondPass.text?.trim() ?? "";
@@ -304,8 +377,8 @@ async function processAudio(
       ? correctedSrt.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
       : cleanedRaw;
 
-    // Normalize any malformed timestamps (e.g. single-digit seconds "01:00:2,700")
-    const finalSrt = normalizeSrtTimestamps(rawFinal);
+    // Normalize malformed timestamps then strip any hallucinated tail entries
+    const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal));
 
     job.status = "done";
     job.message = "Subtitles ready!";
