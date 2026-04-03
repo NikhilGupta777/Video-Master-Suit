@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import multer from "multer";
 import { randomUUID } from "crypto";
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync,
 } from "fs";
 import { join } from "path";
 import { spawn } from "child_process";
@@ -45,8 +45,147 @@ const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
 
-// Bot detection bypass: tv_embedded gives full format list + avoids bot-detection on server IPs
-const YTDLP_BASE_ARGS = ["--extractor-args", "youtube:player_client=tv_embedded,android,ios"];
+// ── yt-dlp config (mirrors youtube.ts / bhagwat.ts) ─────────────────────────
+const YTDLP_PROXY        = process.env.YTDLP_PROXY ?? "";
+const YTDLP_PO_TOKEN     = process.env.YTDLP_PO_TOKEN ?? "";
+const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+const YTDLP_COOKIES_FILE =
+  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+
+// Base args applied to every yt-dlp call (matches youtube.ts for consistency).
+const YTDLP_BASE_ARGS: string[] = [
+  "--retries",            "5",
+  "--fragment-retries",   "5",
+  "--extractor-retries",  "5",
+  "--socket-timeout",     "30",
+  "--add-headers",
+  [
+    "Accept-Language:en-US,en;q=0.9",
+    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer:https://www.youtube.com/",
+    "Origin:https://www.youtube.com",
+  ].join(";"),
+  "--user-agent",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "--sleep-requests", "1",
+  "--sleep-interval",  "2",
+];
+
+if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
+
+if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+  YTDLP_BASE_ARGS.push(
+    "--extractor-args",
+    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+  );
+} else {
+  // android_vr is the most reliable client on datacenter/cloud IPs in 2026.
+  // Does NOT require a PO token. Excludes dead android_sdkless (phased out 2025/2026).
+  YTDLP_BASE_ARGS.push(
+    "--extractor-args",
+    "youtube:player_client=android_vr,web_embedded,default,-android_sdkless",
+  );
+}
+
+// Return cookie args only when the cookies file exists and is a valid Netscape file.
+function getSrtCookieArgs(): string[] {
+  if (!YTDLP_COOKIES_FILE) return [];
+  try {
+    if (!existsSync(YTDLP_COOKIES_FILE)) return [];
+    const stat = statSync(YTDLP_COOKIES_FILE);
+    if (!stat.isFile() || stat.size < 24) return [];
+    const header = readFileSync(YTDLP_COOKIES_FILE, "utf8").slice(0, 256).trimStart();
+    if (
+      !header.startsWith("# Netscape HTTP Cookie File") &&
+      !header.startsWith(".youtube.com")
+    ) return [];
+    return ["--cookies", YTDLP_COOKIES_FILE];
+  } catch { return []; }
+}
+
+function isSrtYtBlocked(msg: string): boolean {
+  return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(msg);
+}
+
+// Fallback clients tried in order when the primary client gets bot-detected on cloud IPs.
+const SRT_YTDLP_FALLBACKS: string[][] = [
+  ["--extractor-args", "youtube:player_client=android_vr"],
+  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
+  ["--extractor-args", "youtube:player_client=web_embedded"],
+  ["--extractor-args", "youtube:player_client=ios"],
+  ["--extractor-args", "youtube:player_client=android"],
+  ["--extractor-args", "youtube:player_client=mweb"],
+];
+
+/**
+ * Run yt-dlp to download audio for a subtitles job.
+ * Supports cancellation via job.cancelled and retries with fallback clients on YouTube bot-blocks.
+ */
+async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Promise<void> {
+  function spawnOnce(extraArgs: string[]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn(
+        PYTHON_BIN,
+        ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...extraArgs, ...args],
+        { env: PYTHON_ENV },
+      );
+      let stderr = "";
+      proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+      const cancelPoll = setInterval(() => {
+        if (job.cancelled) {
+          clearInterval(cancelPoll);
+          try { proc.kill("SIGTERM"); } catch {}
+        }
+      }, 500);
+      proc.on("close", (code) => {
+        clearInterval(cancelPoll);
+        if (job.cancelled) resolve();
+        else if (code === 0) resolve();
+        else reject(new Error(stderr.slice(-400) || `yt-dlp exited ${code}`));
+      });
+      proc.on("error", (err) => { clearInterval(cancelPoll); reject(err); });
+    });
+  }
+
+  const cookieArgs = getSrtCookieArgs();
+  const attemptPlans: string[][] = [[]];
+  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+
+  let lastErr: Error | null = null;
+  const attempted = new Set<string>();
+
+  for (const extra of attemptPlans) {
+    if (job.cancelled) return;
+    const key = extra.join("\x01");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try {
+      await spawnOnce(extra);
+      return;
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp failed");
+      if (!isSrtYtBlocked(lastErr.message)) throw lastErr;
+    }
+  }
+
+  for (const fallback of SRT_YTDLP_FALLBACKS) {
+    if (job.cancelled) return;
+    const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
+    for (const extra of plans) {
+      const key = extra.join("\x01");
+      if (attempted.has(key)) continue;
+      attempted.add(key);
+      try {
+        await spawnOnce(extra);
+        return;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error("yt-dlp fallback failed");
+      }
+    }
+  }
+
+  throw lastErr ?? new Error("yt-dlp: all clients failed");
+}
 
 // ── In-memory job store ──────────────────────────────────────────────────────
 type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error" | "cancelled";
