@@ -404,7 +404,7 @@ async function processAudio(
     job.message = "AI is transcribing audio...";
 
     const firstPass = await genAI.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-pro",
       contents: [
         {
           role: "user",
@@ -417,7 +417,6 @@ async function processAudio(
       config: {
         temperature: 0.1,
         maxOutputTokens: 65536,
-        thinkingConfig: { thinkingBudget: 0 },
       },
     });
 
@@ -438,7 +437,7 @@ async function processAudio(
     job.message = "AI is auto-correcting errors...";
 
     const secondPass = await genAI.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-pro",
       contents: [
         {
           role: "user",
@@ -451,7 +450,6 @@ async function processAudio(
       config: {
         temperature: 0.1,
         maxOutputTokens: 65536,
-        thinkingConfig: { thinkingBudget: 0 },
       },
     });
 
@@ -471,7 +469,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translationPass = await genAI.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-2.5-pro",
         contents: [
           {
             role: "user",
@@ -481,7 +479,6 @@ async function processAudio(
         config: {
           temperature: 0.2,
           maxOutputTokens: 65536,
-          thinkingConfig: { thinkingBudget: 0 },
         },
       });
 
@@ -497,7 +494,7 @@ async function processAudio(
       job.message = `Verifying ${translateTo} translation...`;
 
       const verifyPass = await genAI.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-2.5-pro",
         contents: [
           {
             role: "user",
@@ -507,7 +504,6 @@ async function processAudio(
         config: {
           temperature: 0.1,
           maxOutputTokens: 65536,
-          thinkingConfig: { thinkingBudget: 0 },
         },
       });
 
