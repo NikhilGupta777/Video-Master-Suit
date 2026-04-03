@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import {
@@ -525,11 +525,12 @@ async function processAudio(
     });
     geminiFileName = uploadResult.name!;
 
-    // Poll until ACTIVE (up to 3 min)
+    // Poll until ACTIVE (up to 3 min), checking for cancellation each iteration
     let fileInfo: any = uploadResult;
     let attempts = 0;
     while (fileInfo.state === "PROCESSING" && attempts < 90) {
       await new Promise((r) => setTimeout(r, 2000));
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
       fileInfo = await genAI.files.get({ name: geminiFileName });
       attempts++;
     }
@@ -671,6 +672,11 @@ async function processAudio(
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
       const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
+      if (!validateSrt(finalSrt)) {
+        job.status = "error";
+        job.error = "AI returned an invalid translated subtitle file — please try again";
+        return;
+      }
       job.status = "done";
       job.message = "Subtitles ready!";
       job.srt = finalSrt;
@@ -812,6 +818,7 @@ router.post(
     }
 
     if (!isAiConfigured()) {
+      try { rmSync(req.file.path); } catch {}
       res.status(503).json({ error: "AI not configured — add GEMINI_API_KEY" });
       return;
     }
@@ -841,6 +848,15 @@ router.post(
     })();
   },
 );
+
+// ── Multer error handler (must have 4 params to be treated as error middleware) ─
+router.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    res.status(413).json({ error: "File is too large — maximum upload size is 500 MB" });
+    return;
+  }
+  next(err);
+});
 
 // ── Route: Cancel a running job ───────────────────────────────────────────────
 router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
@@ -878,7 +894,7 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
       durationSecs: job.durationSecs ?? null,
     });
   } else if (job.status === "error") {
-    res.json({ status: job.status, error: job.error });
+    res.json({ status: job.status, error: job.error, durationSecs: job.durationSecs ?? null });
   } else {
     res.json({
       status: job.status,
