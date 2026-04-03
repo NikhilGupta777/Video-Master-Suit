@@ -248,7 +248,7 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
 
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const response = await client.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-2.5-flash-image",
     contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
     config: {
       responseModalities: [Modality.TEXT, Modality.IMAGE],
@@ -291,7 +291,7 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
     await new Promise((r) => setTimeout(r, 1500));
     try {
       const bytes = await withTimeout(
-        generateImageViaReplit(prompt, "gemini-3-pro-image-preview"),
+        generateImageViaReplit(prompt, "gemini-2.5-flash-image"),
         IMAGE_GEN_TIMEOUT_MS,
         "Replit pro image generation",
       );
