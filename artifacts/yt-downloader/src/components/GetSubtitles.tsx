@@ -229,40 +229,91 @@ export function GetSubtitles() {
         </button>
       </div>
 
-      {/* Language picker */}
-      <div className="relative">
-        <button
-          onClick={() => setLangOpen((o) => !o)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80 hover:bg-white/8 hover:border-white/20 transition-all w-full sm:w-auto"
-        >
-          <Globe className="w-4 h-4 text-teal-400" />
-          <span>{selectedLang?.label ?? "Auto-detect"}</span>
-          <ChevronDown className={cn("w-4 h-4 text-white/40 ml-auto sm:ml-4 transition-transform", langOpen && "rotate-180")} />
-        </button>
-        <AnimatePresence>
-          {langOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.15 }}
-              className="absolute top-full left-0 mt-1 z-30 bg-zinc-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl w-56"
-            >
-              {LANGUAGES.map((lang) => (
-                <button
-                  key={lang.value}
-                  onClick={() => { setLanguage(lang.value); setLangOpen(false); }}
-                  className={cn(
-                    "w-full text-left px-4 py-2.5 text-sm transition-colors hover:bg-white/8",
-                    language === lang.value ? "text-teal-400 font-semibold" : "text-white/70"
-                  )}
-                >
-                  {lang.label}
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* Language + Translation pickers row */}
+      <div className="flex flex-col sm:flex-row gap-3">
+
+        {/* Audio language picker */}
+        <div className="relative flex-1">
+          <button
+            onClick={() => { setLangOpen((o) => !o); setTranslateOpen(false); }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80 hover:bg-white/8 hover:border-white/20 transition-all w-full"
+          >
+            <Globe className="w-4 h-4 text-teal-400 shrink-0" />
+            <span className="flex-1 text-left">{selectedLang?.label ?? "Auto-detect"}</span>
+            <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", langOpen && "rotate-180")} />
+          </button>
+          <AnimatePresence>
+            {langOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15 }}
+                className="absolute top-full left-0 mt-1 z-30 bg-zinc-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl w-56"
+              >
+                {LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.value}
+                    onClick={() => { setLanguage(lang.value); setLangOpen(false); }}
+                    className={cn(
+                      "w-full text-left px-4 py-2.5 text-sm transition-colors hover:bg-white/8",
+                      language === lang.value ? "text-teal-400 font-semibold" : "text-white/70"
+                    )}
+                  >
+                    {lang.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Translation target picker */}
+        <div className="relative flex-1">
+          <button
+            onClick={() => { setTranslateOpen((o) => !o); setLangOpen(false); }}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm transition-all w-full",
+              translateTo !== "none"
+                ? "bg-violet-500/15 border-violet-500/40 text-violet-300 hover:bg-violet-500/20"
+                : "bg-white/5 border-white/10 text-white/80 hover:bg-white/8 hover:border-white/20"
+            )}
+          >
+            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" ? "text-violet-400" : "text-white/30")} />
+            <span className="flex-1 text-left">
+              {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
+            </span>
+            <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", translateOpen && "rotate-180")} />
+          </button>
+          <AnimatePresence>
+            {translateOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15 }}
+                className="absolute top-full left-0 mt-1 z-30 bg-zinc-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl w-60"
+              >
+                <div className="px-4 py-2 border-b border-white/8">
+                  <p className="text-white/40 text-xs">Translate subtitles after correction</p>
+                </div>
+                {TRANSLATE_LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.value}
+                    onClick={() => { setTranslateTo(lang.value); setTranslateOpen(false); }}
+                    className={cn(
+                      "w-full text-left px-4 py-2.5 text-sm transition-colors hover:bg-white/8",
+                      translateTo === lang.value ? "text-violet-400 font-semibold" : "text-white/70"
+                    )}
+                  >
+                    {lang.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
       </div>
 
       {/* Input area */}
