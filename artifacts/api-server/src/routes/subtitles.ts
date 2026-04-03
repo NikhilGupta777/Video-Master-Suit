@@ -77,17 +77,23 @@ function isAiConfigured(): boolean {
   );
 }
 
+// 15-minute timeout — long audio files can take many minutes for Gemini to process
+const GEMINI_TIMEOUT_MS = 15 * 60 * 1000;
+
 function getGenAI(): GoogleGenAI | null {
-  // Prefer Replit Gemini integration credentials when available
+  // Prefer direct API key — more reliable than the integration proxy
+  const directKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (directKey) {
+    return new GoogleGenAI({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
+  }
+  // Fall back to Replit Gemini integration proxy when no direct key is set
   if (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
     return new GoogleGenAI({
       apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-      httpOptions: { baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL },
+      httpOptions: { baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL, timeout: GEMINI_TIMEOUT_MS },
     });
   }
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
+  return null;
 }
 
 function buildSrtPrompt(language: string, durationSrt: string): string {
