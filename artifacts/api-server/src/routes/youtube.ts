@@ -820,45 +820,24 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
   });
 });
 
-async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
-  const jobRef = jobs.get(jobId)!;
+// Run one download attempt with given extra args (cookies / client override).
+// Streams progress into jobRef; resolves on exit code 0, rejects with stderr on failure.
+function spawnDownloadOnce(
+  extraArgs: string[],
+  cmdArgs: string[],
+  jobRef: DownloadJob,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    // Reset progress state for retry attempts
+    jobRef.percent = 0;
+    jobRef.filename = null;
+    jobRef.filePath = null;
 
-  const isAudioOnly = job.audioOnly || job.formatId.startsWith("audio:");
-
-  const rawFormatId = isAudioOnly
-    ? job.formatId.replace("audio:", "")
-    : job.formatId;
-
-  const ext = isAudioOnly ? "mp3" : "mp4";
-  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
-  jobRef.ext = ext;
-  jobRef.status = "downloading";
-  jobRef.message = isAudioOnly ? "Downloading audio..." : "Downloading...";
-
-  const args: string[] = [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--progress",
-  ];
-
-  if (isAudioOnly) {
-    args.push("-f", rawFormatId);
-    args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
-  } else {
-    args.push("-f", rawFormatId);
-    args.push("--merge-output-format", "mp4");
-    // ffmpeg reconnect flags — required for YouTube SABR/adaptive streaming (2025+).
-    // Without these, mid-download connection resets cause corrupt or incomplete files.
-    args.push("--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5");
-  }
-
-  args.push("-o", outputPath, job.url);
-
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
-      env: PYTHON_ENV,
-    });
+    const proc = spawn(
+      PYTHON_BIN,
+      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs],
+      { env: PYTHON_ENV },
+    );
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -949,6 +928,110 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
       reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
     );
   });
+}
+
+async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
+  const jobRef = jobs.get(jobId)!;
+
+  const isAudioOnly = job.audioOnly || job.formatId.startsWith("audio:");
+
+  const rawFormatId = isAudioOnly
+    ? job.formatId.replace("audio:", "")
+    : job.formatId;
+
+  const ext = isAudioOnly ? "mp3" : "mp4";
+  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
+  jobRef.ext = ext;
+  jobRef.status = "downloading";
+  jobRef.message = isAudioOnly ? "Downloading audio..." : "Downloading...";
+
+  const cmdArgs: string[] = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--progress",
+  ];
+
+  if (isAudioOnly) {
+    cmdArgs.push("-f", rawFormatId);
+    cmdArgs.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
+  } else {
+    cmdArgs.push("-f", rawFormatId);
+    cmdArgs.push("--merge-output-format", "mp4");
+    // ffmpeg reconnect flags — required for YouTube SABR/adaptive streaming (2025+).
+    // Without these, mid-download connection resets cause corrupt or incomplete files.
+    cmdArgs.push("--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5");
+  }
+
+  cmdArgs.push("-o", outputPath, job.url);
+
+  // Build the same cookie + fallback strategy as runYtDlp so that cookies are
+  // sent and bot-detected attempts are retried with different player clients.
+  const cookieArgs = getYtdlpCookieArgs();
+  const isYt = isYouTubeUrl(job.url);
+
+  // Attempt order: (1) base [+cookies], (2) each client fallback [+cookies]
+  const attemptPlans: string[][] = [[]];
+  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+
+  const downloadFallbacks: string[][] = [
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
+    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=mweb"],
+    ["--extractor-args", "youtube:player_client=android_vr,mweb"],
+    ["--extractor-args", "youtube:player_client=ios"],
+    ["--extractor-args", "youtube:player_client=web_embedded"],
+    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
+    ["--extractor-args", "youtube:player_client=android"],
+    ["--extractor-args", "youtube:player_client=ios,web_embedded"],
+    ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
+  ];
+
+  const attempted = new Set<string>();
+  let lastErr: Error | null = null;
+
+  // First pass: base args (with and without cookies)
+  for (const extra of attemptPlans) {
+    const key = extra.join("\u0001");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try {
+      await spawnDownloadOnce(extra, cmdArgs, jobRef);
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp download failed");
+      // Only keep trying client fallbacks for YouTube bot-blocks
+      if (!isYt || !isYouTubeBlockedError(lastErr.message)) throw lastErr;
+    }
+  }
+
+  // Second pass: client fallbacks (only reached on YouTube bot-detection)
+  if (lastErr && isYt) {
+    jobRef.status = "downloading";
+    jobRef.message = isAudioOnly ? "Retrying download..." : "Retrying with alternate client...";
+    for (const fallback of downloadFallbacks) {
+      const plans = cookieArgs.length
+        ? [[...cookieArgs, ...fallback], fallback]
+        : [fallback];
+      for (const extra of plans) {
+        const key = extra.join("\u0001");
+        if (attempted.has(key)) continue;
+        attempted.add(key);
+        try {
+          await spawnDownloadOnce(extra, cmdArgs, jobRef);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error("yt-dlp fallback download failed");
+        }
+      }
+      if (!lastErr) break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
 
   // Find the output file (yt-dlp may change extension)
   const possibleExts = isAudioOnly ? ["mp3"] : ["mp4", "mkv", "webm"];
