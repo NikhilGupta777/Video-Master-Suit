@@ -424,10 +424,12 @@ function validateSrt(srt: string): boolean {
 // ── Strip markdown code fences from AI output ────────────────────────────────
 function stripFences(text: string): string {
   let s = text.trim();
+  // Normalize Windows line endings so all downstream splits work correctly
+  s = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // Remove opening fence with optional language tag (e.g. ```srt or ```text)
-  s = s.replace(/^```(?:[a-z]*)[ \t]*\r?\n/i, "");
+  s = s.replace(/^```(?:[a-z]*)[ \t]*\n/i, "");
   // Remove closing fence
-  s = s.replace(/\r?\n```[ \t]*$/i, "");
+  s = s.replace(/\n```[ \t]*$/i, "");
   return s.trim();
 }
 
