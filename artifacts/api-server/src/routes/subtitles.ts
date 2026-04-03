@@ -392,14 +392,37 @@ function filterOutOfBoundsEntries(srt: string, durationSecs: number): string {
 }
 
 // ── Basic SRT validity check ──────────────────────────────────────────────────
+// Checks first AND last entry so truncated output (maxOutputTokens hit) is caught.
 function validateSrt(srt: string): boolean {
   const entries = srt.trim().split(/\n\n+/).filter(Boolean);
   if (entries.length === 0) return false;
+
+  // Check first entry structure
   const firstLines = entries[0].trim().split("\n");
   if (firstLines.length < 3) return false;
   if (!/^\d+$/.test(firstLines[0].trim())) return false;
   if (!/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/.test(firstLines[1])) return false;
+
+  // Check last entry is also complete — guards against Gemini token-limit truncation
+  if (entries.length > 1) {
+    const lastLines = entries[entries.length - 1].trim().split("\n");
+    if (lastLines.length < 3) {
+      logger.warn("Last SRT entry appears truncated — likely hit token limit");
+      return false;
+    }
+  }
+
   return true;
+}
+
+// ── Strip markdown code fences from AI output ────────────────────────────────
+function stripFences(text: string): string {
+  let s = text.trim();
+  // Remove opening fence with optional language tag (e.g. ```srt or ```text)
+  s = s.replace(/^```(?:[a-z]*)[ \t]*\r?\n/i, "");
+  // Remove closing fence
+  s = s.replace(/\r?\n```[ \t]*$/i, "");
+  return s.trim();
 }
 
 // ── Preprocess audio with ffmpeg (16kHz mono WAV) ────────────────────────────
@@ -548,10 +571,7 @@ async function processAudio(
       return;
     }
 
-    const cleanedRaw = rawSrt
-      .replace(/^```[a-z]*\n?/i, "")
-      .replace(/\n?```$/i, "")
-      .trim();
+    const cleanedRaw = stripFences(rawSrt);
 
     // Step 3: Auto-correction pass — same audio + draft SRT → Gemini corrects mistakes
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
@@ -579,7 +599,7 @@ async function processAudio(
 
     // If the correction pass fails or returns garbage, fall back to the first pass
     const rawFinal = (correctedSrt && correctedSrt.length > 10)
-      ? correctedSrt.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+      ? stripFences(correctedSrt)
       : cleanedRaw;
 
     // Normalize malformed timestamps, filter out-of-bounds entries, strip hallucinations
@@ -619,7 +639,7 @@ async function processAudio(
 
       const translatedRaw = translationPass.text?.trim() ?? "";
       const translatedClean = translatedRaw.length > 10
-        ? translatedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+        ? stripFences(translatedRaw)
         : correctedFinalSrt;
       // Always restore original timestamps — Gemini sometimes garbles them during translation
       const translatedSrt = restoreTimestamps(correctedFinalSrt, translatedClean);
@@ -645,7 +665,7 @@ async function processAudio(
 
       const verifiedRaw = verifyPass.text?.trim() ?? "";
       const verifiedClean = verifiedRaw.length > 10
-        ? verifiedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+        ? stripFences(verifiedRaw)
         : translatedSrt;
       // Restore timestamps again after verification pass (same Gemini behaviour)
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
@@ -721,13 +741,35 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
           "--no-playlist", "--no-warnings",
           "-o", audioPattern, url.trim(),
         ], { env: PYTHON_ENV });
+
         let stderr = "";
         proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+
+        // Poll for cancellation every 500ms and kill yt-dlp if the job was cancelled
+        const cancelPoll = setInterval(() => {
+          if (job.cancelled) {
+            clearInterval(cancelPoll);
+            try { proc.kill("SIGTERM"); } catch {}
+          }
+        }, 500);
+
         proc.on("close", (code) => {
-          code === 0 ? resolve() : reject(new Error(stderr.slice(-400)));
+          clearInterval(cancelPoll);
+          if (job.cancelled) {
+            resolve(); // Cancelled — treat as clean exit; status already set
+          } else {
+            code === 0 ? resolve() : reject(new Error(stderr.slice(-400)));
+          }
         });
-        proc.on("error", reject);
+        proc.on("error", (err) => { clearInterval(cancelPoll); reject(err); });
       });
+
+      // Bail out if cancelled during download
+      if (job.cancelled) {
+        job.status = "cancelled";
+        job.message = "Cancelled";
+        return;
+      }
 
       const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
       const audioFile = audioFiles
@@ -750,8 +792,10 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       logger.error({ err }, "SRT YouTube download error");
-      job.status = "error";
-      job.error = err.message || "Failed to download audio";
+      if (job.status !== "cancelled") {
+        job.status = "error";
+        job.error = err.message || "Failed to download audio";
+      }
       try { rmSync(audioDir, { recursive: true }); } catch {}
     }
   })();
@@ -831,6 +875,7 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
       srt: job.srt,
       originalSrt: job.originalSrt ?? null,
       originalFilename: job.originalFilename ?? null,
+      durationSecs: job.durationSecs ?? null,
     });
   } else if (job.status === "error") {
     res.json({ status: job.status, error: job.error });

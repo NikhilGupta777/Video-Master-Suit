@@ -87,6 +87,7 @@ export function GetSubtitles() {
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedOriginal, setCopiedOriginal] = useState(false);
   // Smooth 1-second tick so the countdown updates every second, not every poll
   const [tick, setTick] = useState(0);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
@@ -97,6 +98,8 @@ export function GetSubtitles() {
   const jobInputModeRef = useRef<InputMode>("url");
   // Track translateTo used for THIS job (not the current UI state)
   const jobTranslateToRef = useRef<string>("none");
+  // Set to true when cancel is clicked before the jobId has arrived
+  const pendingCancelRef = useRef(false);
 
   // Store last submitted params for retry
   const lastUrlRef = useRef<string>("");
@@ -188,6 +191,7 @@ export function GetSubtitles() {
   }, [toast]);
 
   const startJob = async (mode: InputMode, urlVal: string, fileVal: File | null, lang: string, trans: string) => {
+    pendingCancelRef.current = false;
     setLoading(true);
     setSrtContent(null);
     setOriginalSrt(null);
@@ -231,9 +235,18 @@ export function GetSubtitles() {
       }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to start job");
+
       setJobId(data.jobId);
+
+      // If cancel was clicked while the initial fetch was in-flight, cancel the server job now
+      if (pendingCancelRef.current) {
+        try { await fetch(`${BASE()}/api/subtitles/cancel/${data.jobId}`, { method: "POST" }); } catch {}
+        return; // UI already shows "cancelled" from handleCancel
+      }
+
       pollStatus(data.jobId);
     } catch (err: any) {
+      if (pendingCancelRef.current) return; // suppress error if cancelled
       setLoading(false);
       setJobStatus("error");
       setJobError(err.message);
@@ -263,14 +276,16 @@ export function GetSubtitles() {
   };
 
   const handleCancel = async () => {
-    if (!jobId) return;
+    pendingCancelRef.current = true;
     stopPolling();
-    try {
-      await fetch(`${BASE()}/api/subtitles/cancel/${jobId}`, { method: "POST" });
-    } catch {}
     setJobStatus("cancelled");
     setJobMessage("Cancelled by user");
     setLoading(false);
+    // If we already have a jobId, tell the server immediately
+    if (jobId) {
+      try { await fetch(`${BASE()}/api/subtitles/cancel/${jobId}`, { method: "POST" }); } catch {}
+    }
+    // If jobId is not yet set, startJob will detect pendingCancelRef and cancel after it arrives
   };
 
   const handleFileDrop = (e: React.DragEvent) => {
@@ -297,6 +312,17 @@ export function GetSubtitles() {
       await navigator.clipboard.writeText(srtContent);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
+    }
+  };
+
+  const copyOriginalToClipboard = async () => {
+    if (!originalSrt) return;
+    try {
+      await navigator.clipboard.writeText(originalSrt);
+      setCopiedOriginal(true);
+      setTimeout(() => setCopiedOriginal(false), 2000);
     } catch {
       toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
     }
@@ -358,26 +384,30 @@ export function GetSubtitles() {
         </div>
       </div>
 
-      {/* Input mode toggle */}
-      <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 w-fit">
+      {/* Input mode toggle — locked while a job is running to prevent clearing live state */}
+      <div className={cn("flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 w-fit", isRunning && "opacity-50")}>
         <button
-          onClick={() => { setInputMode("url"); reset(); }}
+          onClick={() => { if (!isRunning) { setInputMode("url"); reset(); } }}
+          disabled={!!isRunning}
           className={cn(
             "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all",
             inputMode === "url"
               ? "bg-teal-600 text-white shadow-[0_0_16px_rgba(20,184,166,0.3)]"
-              : "text-white/50 hover:text-white/80"
+              : "text-white/50 hover:text-white/80",
+            isRunning && "cursor-not-allowed"
           )}
         >
           <Youtube className="w-4 h-4" /> YouTube URL
         </button>
         <button
-          onClick={() => { setInputMode("file"); reset(); }}
+          onClick={() => { if (!isRunning) { setInputMode("file"); reset(); } }}
+          disabled={!!isRunning}
           className={cn(
             "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all",
             inputMode === "file"
               ? "bg-teal-600 text-white shadow-[0_0_16px_rgba(20,184,166,0.3)]"
-              : "text-white/50 hover:text-white/80"
+              : "text-white/50 hover:text-white/80",
+            isRunning && "cursor-not-allowed"
           )}
         >
           <Upload className="w-4 h-4" /> Upload File
@@ -589,6 +619,7 @@ export function GetSubtitles() {
       <AnimatePresence>
         {jobStatus && (
           <motion.div
+            key="progress-panel"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
@@ -598,11 +629,7 @@ export function GetSubtitles() {
             <div className="flex items-center gap-2">
               {jobStepOrder.map((step, i) => {
                 const isErrorOrCancelled = ["error", "cancelled"].includes(jobStatus ?? "");
-                const isDone = jobStatus === "done"
-                  ? true
-                  : isErrorOrCancelled
-                    ? i < currentStepIdx
-                    : i < currentStepIdx;
+                const isDone = jobStatus === "done" || i < currentStepIdx;
                 const isActive = !isErrorOrCancelled && i === currentStepIdx && jobStatus !== "done";
                 const isFailed = isErrorOrCancelled && i === currentStepIdx;
                 const isStoppedAt = jobStatus === "cancelled" && i === currentStepIdx;
@@ -668,7 +695,8 @@ export function GetSubtitles() {
                   </div>
                 </div>
 
-                {/* Download buttons */}
+                {/* Download + copy buttons */}
+                {/* Primary SRT (translated when translation on, otherwise the corrected original) */}
                 <div className="flex flex-wrap gap-2">
                   <Button
                     onClick={() => downloadFile(srtContent!, srtFilename)}
@@ -677,18 +705,6 @@ export function GetSubtitles() {
                     <Download className="w-4 h-4 mr-2" />
                     {originalSrt ? `Download ${jobTranslateToRef.current}` : "Download SRT"}
                   </Button>
-
-                  {originalSrt && (
-                    <Button
-                      onClick={() => downloadFile(originalSrt, originalFilename ?? "original.srt")}
-                      variant="outline"
-                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Download {sourceLangLabel}
-                    </Button>
-                  )}
-
                   <Button
                     onClick={copyToClipboard}
                     variant="outline"
@@ -698,6 +714,28 @@ export function GetSubtitles() {
                     {copied ? "Copied!" : "Copy"}
                   </Button>
                 </div>
+
+                {/* Original-language SRT when translation was on */}
+                {originalSrt && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => downloadFile(originalSrt, originalFilename ?? "original.srt")}
+                      variant="outline"
+                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download {sourceLangLabel}
+                    </Button>
+                    <Button
+                      onClick={copyOriginalToClipboard}
+                      variant="outline"
+                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                    >
+                      {copiedOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
+                      {copiedOriginal ? "Copied!" : "Copy"}
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-3">
@@ -729,7 +767,7 @@ export function GetSubtitles() {
                   <p className="text-white/30 text-xs font-medium">
                     Preview · {Math.min(25, entryCount)} of {entryCount} entries
                   </p>
-                  <p className="text-white/20 text-xs">scroll to see more</p>
+                  {entryCount > 25 && <p className="text-white/20 text-xs">scroll to see more</p>}
                 </div>
                 <div className="p-4 max-h-64 overflow-y-auto">
                   <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed">
