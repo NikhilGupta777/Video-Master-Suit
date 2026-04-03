@@ -78,7 +78,7 @@ function getGenAI(): GoogleGenAI | null {
   return new GoogleGenAI({ apiKey });
 }
 
-function buildSrtPrompt(language: string): string {
+function buildSrtPrompt(language: string, durationSrt: string): string {
   const langNote =
     language === "auto"
       ? "The audio may be in any language — transcribe it in the original language spoken, do NOT translate."
@@ -87,6 +87,8 @@ function buildSrtPrompt(language: string): string {
   return `You are a professional subtitle creator. Listen to the ENTIRE audio carefully and produce a complete, accurate SRT subtitle file.
 
 ${langNote}
+
+AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. Do NOT generate any timestamp beyond ${durationSrt}.
 
 STRICT SRT FORMAT RULES:
 1. Each entry has exactly 3 parts, followed by a blank line:
@@ -111,7 +113,7 @@ Second subtitle entry text.
 Now transcribe the entire audio:`;
 }
 
-function buildCorrectionPrompt(rawSrt: string, language: string): string {
+function buildCorrectionPrompt(rawSrt: string, language: string, durationSrt: string): string {
   const langNote =
     language === "auto"
       ? "The audio and subtitles are in their original language — do NOT translate anything."
@@ -120,6 +122,8 @@ function buildCorrectionPrompt(rawSrt: string, language: string): string {
   return `You are an expert subtitle proofreader and corrector. I will give you an audio recording and a draft SRT subtitle file that was auto-generated from it.
 
 ${langNote}
+
+AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. If you see any timestamp beyond ${durationSrt}, it is a hallucination — fix it to match the actual audio timing.
 
 Your task: Listen to the ENTIRE audio very carefully, then fix ALL errors in the SRT file.
 
@@ -131,12 +135,13 @@ Common errors to fix:
 - Wrong word forms (e.g., wrong verb endings, missing particles/suffixes)
 - Filler sounds or stumbles mistakenly transcribed as real words
 - Timestamp mismatches (subtitle appearing too early or too late by more than 0.5 seconds)
+- Timestamps that go BEYOND the audio duration (hallucinated timestamps — correct them)
 - Incorrect word order
 
 IMPORTANT RULES:
 - Keep the exact same SRT format (number, timestamp, text, blank line)
 - Preserve all correct entries exactly as they are — only change what is wrong
-- Keep ALL timestamps as-is UNLESS there is a clear sync issue
+- Fix any timestamp that exceeds ${durationSrt}
 - Do NOT add translation or explanations
 - Do NOT summarize or shorten any entries
 - Return ONLY the corrected SRT content — no explanations, no markdown fences, no extra text
@@ -157,6 +162,33 @@ function normalizeSrtTimestamps(srt: string): string {
     (_m, h, mm, ss, ms) =>
       `${h}:${mm.padStart(2, "0")}:${ss.padStart(2, "0")},${ms}`,
   );
+}
+
+// ── Get audio duration via ffprobe ───────────────────────────────────────────
+function getAudioDuration(audioPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "quiet",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      audioPath,
+    ]);
+    let out = "";
+    proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    proc.on("close", () => {
+      const secs = parseFloat(out.trim());
+      resolve(isNaN(secs) ? 0 : secs);
+    });
+    proc.on("error", () => resolve(0));
+  });
+}
+
+/** Convert seconds → HH:MM:SS for use in prompts */
+function secondsToSrtTime(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 // ── Core processing function ─────────────────────────────────────────────────
@@ -184,6 +216,11 @@ async function processAudio(
     const mimeType = audioMimeType(ext);
     const audioBuffer = readFileSync(audioPath);
     const audioBlob = new Blob([audioBuffer], { type: mimeType });
+
+    // Measure exact audio duration so we can tell Gemini to stay within bounds
+    const durationSecs = await getAudioDuration(audioPath);
+    const durationSrt = durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
+    logger.info({ durationSecs, durationSrt }, "Audio duration measured");
 
     // Step 1: Upload to Gemini Files API
     job.status = "uploading";
@@ -223,7 +260,7 @@ async function processAudio(
           role: "user",
           parts: [
             { fileData: { mimeType, fileUri } },
-            { text: buildSrtPrompt(language) },
+            { text: buildSrtPrompt(language, durationSrt) },
           ],
         },
       ],
@@ -253,7 +290,7 @@ async function processAudio(
           role: "user",
           parts: [
             { fileData: { mimeType, fileUri } },
-            { text: buildCorrectionPrompt(cleanedRaw, language) },
+            { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) },
           ],
         },
       ],
