@@ -79,11 +79,11 @@ if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
     `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
   );
 } else {
-  // android_vr is the most reliable client on datacenter/cloud IPs in 2026.
-  // Does NOT require a PO token. Excludes dead android_sdkless (phased out 2025/2026).
+  // tv_embedded is the most reliable client on AWS/datacenter IPs in 2025/2026.
+  // android_vr is a strong secondary. Exclude dead android_sdkless.
   YTDLP_BASE_ARGS.push(
     "--extractor-args",
-    "youtube:player_client=android_vr,web_embedded,default,-android_sdkless",
+    "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
   );
 }
 
@@ -103,18 +103,25 @@ function getSrtCookieArgs(): string[] {
   } catch { return []; }
 }
 
+// YouTube block detection — broad pattern to catch all YouTube error variants in 2025/2026.
 function isSrtYtBlocked(msg: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|http error 429|too many requests|rate.?limit|forbidden|http error 403/i.test(msg);
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401/i.test(msg);
 }
 
-// Fallback clients tried in order when the primary client gets bot-detected on cloud IPs.
+// Fallback clients ordered by reliability on AWS/datacenter IPs.
+// tv_embedded (YouTube TV embedded player) is the least bot-checked on server IPs.
 const SRT_YTDLP_FALLBACKS: string[][] = [
+  ["--extractor-args", "youtube:player_client=tv_embedded"],
+  ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
   ["--extractor-args", "youtube:player_client=android_vr"],
-  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-  ["--extractor-args", "youtube:player_client=web_embedded"],
-  ["--extractor-args", "youtube:player_client=ios"],
-  ["--extractor-args", "youtube:player_client=android"],
   ["--extractor-args", "youtube:player_client=mweb"],
+  ["--extractor-args", "youtube:player_client=android_vr,mweb"],
+  ["--extractor-args", "youtube:player_client=ios"],
+  ["--extractor-args", "youtube:player_client=web_embedded"],
+  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
+  ["--extractor-args", "youtube:player_client=android"],
+  ["--extractor-args", "youtube:player_client=ios,web_embedded"],
+  ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
 ];
 
 /**
