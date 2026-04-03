@@ -29,11 +29,12 @@ const STEP_LABELS: Record<string, string> = {
   audio:      "Downloading audio from YouTube...",
   uploading:  "Uploading to Gemini AI...",
   generating: "Transcribing audio to SRT...",
+  correcting: "Auto-correcting errors (2nd AI pass)...",
   done:       "Subtitles ready!",
   error:      "Something went wrong",
 };
 
-const STEP_ORDER = ["audio", "uploading", "generating", "done"];
+const STEP_ORDER = ["audio", "uploading", "generating", "correcting", "done"];
 
 export function GetSubtitles() {
   const [inputMode, setInputMode] = useState<InputMode>("url");
