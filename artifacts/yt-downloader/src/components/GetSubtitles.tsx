@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
+  Copy, Check, RefreshCw, StopCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -25,25 +26,44 @@ const LANGUAGES = [
 
 const TRANSLATE_LANGUAGES = [
   { value: "none",    label: "No translation" },
-  { value: "English", label: "Translate → English" },
   { value: "Hindi",   label: "Translate → Hindi (हिन्दी)" },
+  { value: "English", label: "Translate → English" },
+  { value: "Odia",    label: "Translate → Odia (ଓଡ଼ିଆ)" },
 ];
 
 type InputMode = "url" | "file";
 
 const STEP_LABELS: Record<string, string> = {
-  audio:      "Downloading audio from YouTube...",
-  uploading:  "Uploading to Gemini AI...",
-  generating: "Transcribing audio to SRT...",
-  correcting: "Auto-correcting errors (2nd AI pass)...",
+  audio:       "Downloading audio from YouTube...",
+  uploading:   "Uploading to Gemini AI...",
+  generating:  "Transcribing audio to SRT...",
+  correcting:  "Auto-correcting errors (2nd AI pass)...",
   translating: "Translating subtitles (3rd AI pass)...",
-  verifying:  "Verifying translation (4th AI pass)...",
-  done:       "Subtitles ready!",
-  error:      "Something went wrong",
+  verifying:   "Verifying translation (4th AI pass)...",
+  done:        "Subtitles ready!",
+  error:       "Something went wrong",
+  cancelled:   "Cancelled",
 };
 
-const BASE_STEPS = ["audio", "uploading", "generating", "correcting"];
+// URL mode includes "audio" step (YouTube download); file mode skips it
+const BASE_STEPS_URL  = ["audio", "uploading", "generating", "correcting"];
+const BASE_STEPS_FILE = ["uploading", "generating", "correcting"];
 const TRANSLATE_STEPS = ["translating", "verifying"];
+
+/** Rough time estimate: audioDuration * 0.15s per pass + overheads */
+function estimateSeconds(durationSecs: number, hasTranslation: boolean): number {
+  const perPassSecs = Math.ceil(durationSecs * 0.15);
+  const twoPassSecs = perPassSecs * 2;
+  const translationSecs = hasTranslation ? 90 : 0;
+  return Math.max(30, twoPassSecs + translationSecs + 40);
+}
+
+function formatDuration(secs: number): string {
+  if (secs < 60) return `${Math.round(secs)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
 
 export function GetSubtitles() {
   const [inputMode, setInputMode] = useState<InputMode>("url");
@@ -58,16 +78,30 @@ export function GetSubtitles() {
   const [jobError, setJobError] = useState("");
   const [srtContent, setSrtContent] = useState<string | null>(null);
   const [srtFilename, setSrtFilename] = useState("subtitles.srt");
+  const [originalSrt, setOriginalSrt] = useState<string | null>(null);
+  const [originalFilename, setOriginalFilename] = useState<string | null>(null);
+  const [durationSecs, setDurationSecs] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+
+  // Store last submitted params for retry
+  const lastUrlRef = useRef<string>("");
+  const lastFileRef = useRef<File | null>(null);
+  const lastLangRef = useRef<string>("auto");
+  const lastTranslateRef = useRef<string>("none");
+  const lastModeRef = useRef<InputMode>("url");
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
+  const stepBase = inputMode === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE;
   const stepOrder = translateTo !== "none"
-    ? [...BASE_STEPS, ...TRANSLATE_STEPS, "done"]
-    : [...BASE_STEPS, "done"];
+    ? [...stepBase, ...TRANSLATE_STEPS, "done"]
+    : [...stepBase, "done"];
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -80,6 +114,7 @@ export function GetSubtitles() {
         const res = await fetch(`${BASE()}/api/subtitles/status/${id}`);
         const data = await res.json();
 
+        if (data.durationSecs != null) setDurationSecs(data.durationSecs);
         setJobStatus(data.status);
         setJobMessage(data.message ?? STEP_LABELS[data.status] ?? "");
 
@@ -88,11 +123,16 @@ export function GetSubtitles() {
           setLoading(false);
           setSrtContent(data.srt);
           setSrtFilename(data.filename ?? "subtitles.srt");
+          setOriginalSrt(data.originalSrt ?? null);
+          setOriginalFilename(data.originalFilename ?? null);
         } else if (data.status === "error") {
           stopPolling();
           setLoading(false);
           setJobError(data.error ?? "Unknown error");
           toast({ title: "Failed", description: data.error, variant: "destructive" });
+        } else if (data.status === "cancelled") {
+          stopPolling();
+          setLoading(false);
         }
       } catch {
         // keep polling on transient network errors
@@ -100,23 +140,40 @@ export function GetSubtitles() {
     }, 2500);
   }, [toast]);
 
-  const handleUrlSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!url.trim()) return;
-
+  const startJob = async (mode: InputMode, urlVal: string, fileVal: File | null, lang: string, trans: string) => {
     setLoading(true);
     setSrtContent(null);
-    setJobStatus("audio");
-    setJobMessage("Downloading audio from YouTube...");
+    setOriginalSrt(null);
+    setOriginalFilename(null);
+    setDurationSecs(null);
+    setJobStatus(mode === "url" ? "audio" : "uploading");
+    setJobMessage(mode === "url" ? "Downloading audio from YouTube..." : "Uploading to AI...");
     setJobError("");
     setJobId(null);
+    setJobStartedAt(Date.now());
+
+    // Save for retry
+    lastUrlRef.current = urlVal;
+    lastFileRef.current = fileVal;
+    lastLangRef.current = lang;
+    lastTranslateRef.current = trans;
+    lastModeRef.current = mode;
 
     try {
-      const res = await fetch(`${BASE()}/api/subtitles/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), language, translateTo }),
-      });
+      let res: Response;
+      if (mode === "url") {
+        res = await fetch(`${BASE()}/api/subtitles/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: urlVal.trim(), language: lang, translateTo: trans }),
+        });
+      } else {
+        const form = new FormData();
+        form.append("file", fileVal!);
+        form.append("language", lang);
+        form.append("translateTo", trans);
+        res = await fetch(`${BASE()}/api/subtitles/upload`, { method: "POST", body: form });
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to start job");
       setJobId(data.jobId);
@@ -129,36 +186,36 @@ export function GetSubtitles() {
     }
   };
 
-  const handleFileUpload = async () => {
+  const handleUrlSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!url.trim()) return;
+    startJob("url", url, null, language, translateTo);
+  };
+
+  const handleFileUpload = () => {
     if (!file) return;
+    startJob("file", "", file, language, translateTo);
+  };
 
-    setLoading(true);
-    setSrtContent(null);
-    setJobStatus("uploading");
-    setJobMessage("Uploading to Gemini AI...");
-    setJobError("");
-    setJobId(null);
+  const handleRetry = () => {
+    startJob(
+      lastModeRef.current,
+      lastUrlRef.current,
+      lastFileRef.current,
+      lastLangRef.current,
+      lastTranslateRef.current,
+    );
+  };
 
+  const handleCancel = async () => {
+    if (!jobId) return;
+    stopPolling();
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("language", language);
-      form.append("translateTo", translateTo);
-
-      const res = await fetch(`${BASE()}/api/subtitles/upload`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to upload");
-      setJobId(data.jobId);
-      pollStatus(data.jobId);
-    } catch (err: any) {
-      setLoading(false);
-      setJobStatus("error");
-      setJobError(err.message);
-      toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
-    }
+      await fetch(`${BASE()}/api/subtitles/cancel/${jobId}`, { method: "POST" });
+    } catch {}
+    setJobStatus("cancelled");
+    setJobMessage("Cancelled by user");
+    setLoading(false);
   };
 
   const handleFileDrop = (e: React.DragEvent) => {
@@ -168,26 +225,51 @@ export function GetSubtitles() {
     if (dropped) setFile(dropped);
   };
 
-  const downloadSrt = () => {
-    if (!srtContent) return;
-    const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
+  const downloadFile = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = srtFilename;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
   };
 
+  const copyToClipboard = async () => {
+    if (!srtContent) return;
+    try {
+      await navigator.clipboard.writeText(srtContent);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
+    }
+  };
+
   const reset = () => {
     stopPolling();
     setJobId(null); setJobStatus(null); setJobMessage(""); setJobError("");
-    setSrtContent(null); setLoading(false);
+    setSrtContent(null); setOriginalSrt(null); setOriginalFilename(null);
+    setDurationSecs(null); setLoading(false); setJobStartedAt(null);
   };
 
   const selectedLang = LANGUAGES.find((l) => l.value === language);
-  const isRunning = loading && jobStatus && jobStatus !== "done" && jobStatus !== "error";
+  const isRunning = loading && jobStatus && jobStatus !== "done" && jobStatus !== "error" && jobStatus !== "cancelled";
+
+  // Time estimate display
+  const estimatedTotal = durationSecs != null ? estimateSeconds(durationSecs, translateTo !== "none") : null;
+  const elapsed = jobStartedAt ? Math.floor((Date.now() - jobStartedAt) / 1000) : 0;
+  const remaining = estimatedTotal != null ? Math.max(0, estimatedTotal - elapsed) : null;
+
+  const durationLabel = durationSecs != null
+    ? `Audio: ${formatDuration(durationSecs)}`
+    : null;
+  const remainingLabel = remaining != null && isRunning && elapsed > 5
+    ? `~${formatDuration(remaining)} remaining`
+    : null;
+
+  const entryCount = srtContent?.split("\n\n").filter(Boolean).length ?? 0;
 
   return (
     <div className="w-full max-w-2xl mx-auto flex flex-col gap-6">
@@ -199,7 +281,7 @@ export function GetSubtitles() {
         </div>
         <div>
           <h2 className="text-xl font-display font-bold text-white">Get Subtitles</h2>
-          <p className="text-white/50 text-sm">Generate accurate SRT subtitles for any video using Gemini AI — supports Odia, Hindi, and 8 other languages</p>
+          <p className="text-white/50 text-sm">Generate accurate SRT subtitles using Gemini AI — supports Odia, Hindi, and 8 other languages</p>
         </div>
       </div>
 
@@ -428,12 +510,12 @@ export function GetSubtitles() {
             exit={{ opacity: 0, y: -8 }}
             className="glass-panel rounded-2xl p-5 flex flex-col gap-4"
           >
-            {/* Step indicators */}
+            {/* Step indicators — context-aware based on input mode */}
             <div className="flex items-center gap-2">
               {stepOrder.map((step, i) => {
-                const currentIdx = stepOrder.indexOf(jobStatus ?? "audio");
+                const currentIdx = stepOrder.indexOf(jobStatus ?? (inputMode === "url" ? "audio" : "uploading"));
                 const isDone = i < currentIdx || jobStatus === "done";
-                const isActive = i === currentIdx && jobStatus !== "done" && jobStatus !== "error";
+                const isActive = i === currentIdx && jobStatus !== "done" && jobStatus !== "error" && jobStatus !== "cancelled";
                 return (
                   <React.Fragment key={step}>
                     <div className={cn(
@@ -453,7 +535,15 @@ export function GetSubtitles() {
             </div>
 
             {/* Status message */}
-            {jobStatus === "error" ? (
+            {jobStatus === "cancelled" ? (
+              <div className="flex items-start gap-3 text-yellow-300">
+                <StopCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-sm">Cancelled</p>
+                  <p className="text-yellow-300/60 text-sm mt-0.5">Job was stopped.</p>
+                </div>
+              </div>
+            ) : jobStatus === "error" ? (
               <div className="flex items-start gap-3 text-red-300">
                 <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                 <div>
@@ -462,48 +552,103 @@ export function GetSubtitles() {
                 </div>
               </div>
             ) : jobStatus === "done" ? (
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="w-5 h-5 text-teal-400 shrink-0" />
-                <div className="flex-1">
-                  <p className="text-teal-300 font-semibold text-sm">Subtitles generated successfully!</p>
-                  <p className="text-white/40 text-xs mt-0.5">{srtContent?.split("\n\n").filter(Boolean).length ?? 0} subtitle entries</p>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-teal-400 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-teal-300 font-semibold text-sm">Subtitles generated successfully!</p>
+                    <p className="text-white/40 text-xs mt-0.5">{entryCount} subtitle entries</p>
+                  </div>
                 </div>
-                <Button
-                  onClick={downloadSrt}
-                  className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-5 shrink-0 shadow-[0_0_14px_rgba(20,184,166,0.3)]"
-                >
-                  <Download className="w-4 h-4 mr-2" />
-                  Download SRT
-                </Button>
+
+                {/* Download buttons */}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    onClick={() => downloadFile(srtContent!, srtFilename)}
+                    className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-5 shadow-[0_0_14px_rgba(20,184,166,0.3)]"
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    {originalSrt ? `Download ${translateTo}` : "Download SRT"}
+                  </Button>
+
+                  {originalSrt && (
+                    <Button
+                      onClick={() => downloadFile(originalSrt, originalFilename ?? "original.srt")}
+                      variant="outline"
+                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Original
+                    </Button>
+                  )}
+
+                  <Button
+                    onClick={copyToClipboard}
+                    variant="outline"
+                    className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                  >
+                    {copied ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
+                    {copied ? "Copied!" : "Copy"}
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="flex items-center gap-3">
                 <Loader2 className="w-5 h-5 text-teal-400 animate-spin shrink-0" />
-                <div>
-                  <p className="text-white/80 font-medium text-sm">{jobMessage || STEP_LABELS[jobStatus ?? "audio"] || "Processing..."}</p>
-                  <p className="text-white/30 text-xs mt-0.5">This may take 1-3 minutes for long videos</p>
+                <div className="flex-1">
+                  <p className="text-white/80 font-medium text-sm">{jobMessage || STEP_LABELS[jobStatus ?? "uploading"] || "Processing..."}</p>
+                  <p className="text-white/30 text-xs mt-0.5">
+                    {durationLabel && remainingLabel
+                      ? `${durationLabel} · ${remainingLabel}`
+                      : durationLabel
+                        ? `${durationLabel} · Estimating time...`
+                        : "Estimating duration..."}
+                  </p>
                 </div>
+                {/* Cancel button */}
+                <button
+                  onClick={handleCancel}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-red-400 hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 transition-all"
+                >
+                  <X className="w-3.5 h-3.5" /> Cancel
+                </button>
               </div>
             )}
 
-            {/* SRT preview */}
+            {/* SRT preview — expanded to 25 entries with proper scroll */}
             {srtContent && (
-              <div className="rounded-xl bg-black/30 border border-white/8 p-4 max-h-48 overflow-y-auto">
+              <div className="rounded-xl bg-black/30 border border-white/8 p-4 max-h-64 overflow-y-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-white/30 text-xs font-medium">
+                    Preview · {Math.min(25, entryCount)} of {entryCount} entries
+                  </p>
+                </div>
                 <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed">
-                  {srtContent.split("\n\n").slice(0, 8).join("\n\n")}
-                  {srtContent.split("\n\n").length > 8 && "\n\n..."}
+                  {srtContent.split("\n\n").filter(Boolean).slice(0, 25).join("\n\n")}
+                  {entryCount > 25 && `\n\n... and ${entryCount - 25} more entries`}
                 </pre>
               </div>
             )}
 
-            {/* Reset */}
-            {(jobStatus === "done" || jobStatus === "error") && (
-              <button
-                onClick={reset}
-                className="text-xs text-white/30 hover:text-white/60 transition-colors self-center"
-              >
-                Start over
-              </button>
+            {/* Footer actions */}
+            {(jobStatus === "done" || jobStatus === "error" || jobStatus === "cancelled") && (
+              <div className="flex items-center gap-3 pt-1">
+                {(jobStatus === "error" || jobStatus === "cancelled") && (
+                  <button
+                    onClick={handleRetry}
+                    className="flex items-center gap-1.5 text-xs text-teal-400/80 hover:text-teal-300 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Retry
+                  </button>
+                )}
+                <button
+                  onClick={reset}
+                  className="text-xs text-white/30 hover:text-white/60 transition-colors ml-auto"
+                >
+                  Start over
+                </button>
+              </div>
             )}
           </motion.div>
         )}

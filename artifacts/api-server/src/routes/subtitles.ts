@@ -24,6 +24,7 @@ interface SrtJob {
   originalSrt?: string;
   error?: string;
   filename: string;
+  originalFilename?: string;
   createdAt: number;
   translateTo?: string;
   cancelled?: boolean;
@@ -162,6 +163,7 @@ Common errors to fix:
 - Timestamps using wrong format (MM:SS,mmm instead of HH:MM:SS,mmm — fix these)
 - Timestamps that go BEYOND the audio duration
 - MISSING ENTRIES: speech that occurs after the last SRT entry — add them
+- Duplicate entries: two entries with nearly identical text for the same moment — keep only one
 
 IMPORTANT RULES:
 - Keep the exact same SRT format (number, timestamp, text, blank line)
@@ -183,7 +185,7 @@ function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLa
 
 CRITICAL RULES:
 1. Keep EVERY timestamp line EXACTLY as-is — do NOT change any HH:MM:SS,mmm timestamps
-2. Keep EVERY entry number EXACTLY as-is
+2. Keep EVERY entry number EXACTLY as-is — the number of entries in your output MUST equal the number of entries in the input
 3. Keep the exact same SRT structure (number, timestamp, translated text, blank line)
 4. Translate ONLY the subtitle text lines — nothing else
 5. Produce natural, fluent ${toLanguage} — not a word-for-word literal translation
@@ -191,6 +193,7 @@ CRITICAL RULES:
 7. Keep names of people, places, and proper nouns as they are (or use the standard ${toLanguage} spelling)
 8. Each subtitle must fit on 1-2 lines, max ~42 characters per line — split long translations naturally at phrase boundaries
 9. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
+10. DO NOT add or remove entries — the output entry count must match the input exactly
 
 Here is the SRT to translate:
 ---
@@ -211,10 +214,12 @@ Check every entry for:
 - Unnatural or awkward ${toLanguage} phrasing
 - Names/proper nouns that were incorrectly changed
 - Timestamp or entry number changes (they must be identical to the original)
+- Line length: each subtitle line must be max ~42 characters — split longer lines at phrase boundaries
 
 RULES:
 - Keep ALL timestamps exactly as they appear in the original SRT — do NOT change them
 - Keep ALL entry numbers exactly as they appear in the original SRT
+- The number of entries in your output MUST be exactly the same as the input
 - Fix ONLY the translation text — nothing else
 - Return ONLY the corrected translated SRT — no explanations, no markdown fences
 
@@ -235,6 +240,7 @@ Return the fully verified and corrected ${toLanguage} SRT:`;
 // Fixes two classes of Gemini timestamp mistakes:
 //   1. Missing hours: "01:23,456" → "00:01:23,456"  (MM:SS,mmm → HH:MM:SS,mmm)
 //   2. Single-digit parts: "00:1:2,700" → "00:01:02,700"
+//   3. Seconds/minutes >= 60: carry-over into the next unit
 function normalizeTs(ts: string): string {
   const [timePart, ms = "000"] = ts.split(",");
   const parts = timePart.split(":");
@@ -265,22 +271,50 @@ function normalizeSrtTimestamps(srt: string): string {
   );
 }
 
-// ── Strip hallucinated entries at end of SRT ─────────────────────────────────
-// When Gemini hits the token limit it sometimes repeats a word hundreds of times.
-// Remove any entry whose text has a single unique word repeated >10 times.
+// ── Parse SRT timestamp to milliseconds ──────────────────────────────────────
+function tsToMs(ts: string): number {
+  const m = ts.match(/(\d+):(\d+):(\d+),(\d+)/);
+  if (!m) return -1;
+  return (parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3])) * 1000 + parseInt(m[4]);
+}
+
+// ── Strip hallucinated / garbage entries ──────────────────────────────────────
 function cleanupHallucinatedEntries(srt: string): string {
   const entries = srt.trim().split(/\n\n+/);
   const valid: string[] = [];
+  let prevText = "";
   for (const entry of entries) {
     const lines = entry.trim().split("\n");
     if (lines.length < 3) continue;
-    const text = lines.slice(2).join(" ");
-    const words = text.trim().split(/\s+/);
-    const unique = new Set(words);
-    // Skip entry if >80% of words are the same word (and there are many words)
-    if (words.length > 10 && unique.size <= 2) continue;
-    // Also skip if the entry line doesn't start with a number
+    // Must start with a number
     if (!/^\d+$/.test(lines[0].trim())) continue;
+
+    const tsLine = lines[1].trim();
+    const text = lines.slice(2).join(" ").trim();
+    const words = text.split(/\s+/).filter(Boolean);
+    const unique = new Set(words);
+
+    // 1. Word-repetition hallucination (>80% same word)
+    if (words.length > 10 && unique.size <= 2) continue;
+
+    // 2. Empty or whitespace-only text
+    if (!text) continue;
+
+    // 3. Punctuation-only entries (e.g. "...", "—", ".", "-")
+    if (/^[\s.…\-—–·,!?।]+$/.test(text)) continue;
+
+    // 4. Consecutive identical text (duplicate entries)
+    if (text === prevText) continue;
+
+    // 5. Impossibly short duration (< 200ms) — almost always an artifact
+    const tsParts = tsLine.match(/^(.+?)\s*-->\s*(.+)$/);
+    if (tsParts) {
+      const startMs = tsToMs(tsParts[1].trim());
+      const endMs = tsToMs(tsParts[2].trim());
+      if (startMs >= 0 && endMs >= 0 && endMs - startMs < 200) continue;
+    }
+
+    prevText = text;
     valid.push(entry.trim());
   }
   // Re-number the valid entries sequentially
@@ -294,10 +328,10 @@ function cleanupHallucinatedEntries(srt: string): string {
 }
 
 // ── Restore timestamps from original SRT into translated SRT ─────────────────
-// Gemini sometimes reformats timestamps during translation (e.g. "00:10:50,066"
-// becomes "10:50:000,000"). Since timestamps must NEVER change during translation,
-// we overwrite every timestamp in the translated SRT with the corresponding
-// timestamp from the original corrected SRT, matched by entry number.
+// Gemini sometimes reformats timestamps during translation. Since timestamps
+// must NEVER change during translation, we overwrite every timestamp in the
+// translated SRT with the corresponding timestamp from the original, matched
+// by entry number. If entry counts differ, we log a warning and do a best-effort.
 function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
   const parseEntries = (srt: string) => {
     return srt.trim().split(/\n\n+/).map((block) => {
@@ -311,6 +345,13 @@ function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
 
   const origEntries = parseEntries(originalSrt);
   const transEntries = parseEntries(translatedSrt);
+
+  if (origEntries.length !== transEntries.length) {
+    logger.warn(
+      { origCount: origEntries.length, transCount: transEntries.length },
+      "Entry count mismatch between original and translated SRT — timestamps may be misaligned"
+    );
+  }
 
   const timestampMap = new Map<number, string>();
   for (const e of origEntries) timestampMap.set(e.num, e.timestamp);
@@ -551,6 +592,7 @@ async function processAudio(
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
     if (translateTo && translateTo !== "none") {
       job.originalSrt = correctedFinalSrt;
+      job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
       job.status = "translating";
       job.message = `Translating subtitles to ${translateTo}...`;
 
@@ -691,7 +733,12 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
         return;
       }
 
-      await processAudio(jobId, audioFile, language, "subtitles.srt", translateLang, () => {
+      // Use the actual video title for the SRT filename
+      const rawFilename = audioFile.split("/").pop() ?? "";
+      const videoTitle = rawFilename.replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*]/g, "-").trim() || "subtitles";
+      job.filename = `${videoTitle}.srt`;
+
+      await processAudio(jobId, audioFile, language, job.filename, translateLang, () => {
         try { rmSync(audioDir, { recursive: true }); } catch {}
       });
     } catch (err: any) {
@@ -722,7 +769,7 @@ router.post(
     const translateTo: string | undefined = (req.body as any).translateTo;
     const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
     const baseName = req.file.originalname.replace(/\.[^.]+$/, "");
-    const srtFilename = `${baseName}-subtitles.srt`;
+    const srtFilename = `${baseName}.srt`;
     const jobId = randomUUID();
 
     jobs.set(jobId, {
@@ -744,6 +791,23 @@ router.post(
   },
 );
 
+// ── Route: Cancel a running job ───────────────────────────────────────────────
+router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (job.status === "done" || job.status === "error" || job.status === "cancelled") {
+    res.json({ ok: true, alreadyFinished: true });
+    return;
+  }
+  job.cancelled = true;
+  job.status = "cancelled";
+  job.message = "Cancelled by user";
+  res.json({ ok: true });
+});
+
 // ── Route: Poll job status ────────────────────────────────────────────────────
 router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
   const job = jobs.get(req.params.jobId);
@@ -758,11 +822,17 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
       message: job.message,
       filename: job.filename,
       srt: job.srt,
+      originalSrt: job.originalSrt ?? null,
+      originalFilename: job.originalFilename ?? null,
     });
   } else if (job.status === "error") {
     res.json({ status: job.status, error: job.error });
   } else {
-    res.json({ status: job.status, message: job.message });
+    res.json({
+      status: job.status,
+      message: job.message,
+      durationSecs: job.durationSecs ?? null,
+    });
   }
 });
 
