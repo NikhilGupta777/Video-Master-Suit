@@ -23,6 +23,12 @@ const LANGUAGES = [
   { value: "Kannada", label: "Kannada (ಕನ್ನಡ)" },
 ];
 
+const TRANSLATE_LANGUAGES = [
+  { value: "none",    label: "No translation" },
+  { value: "English", label: "Translate → English" },
+  { value: "Hindi",   label: "Translate → Hindi (हिन्दी)" },
+];
+
 type InputMode = "url" | "file";
 
 const STEP_LABELS: Record<string, string> = {
@@ -30,16 +36,20 @@ const STEP_LABELS: Record<string, string> = {
   uploading:  "Uploading to Gemini AI...",
   generating: "Transcribing audio to SRT...",
   correcting: "Auto-correcting errors (2nd AI pass)...",
+  translating: "Translating subtitles (3rd AI pass)...",
+  verifying:  "Verifying translation (4th AI pass)...",
   done:       "Subtitles ready!",
   error:      "Something went wrong",
 };
 
-const STEP_ORDER = ["audio", "uploading", "generating", "correcting", "done"];
+const BASE_STEPS = ["audio", "uploading", "generating", "correcting"];
+const TRANSLATE_STEPS = ["translating", "verifying"];
 
 export function GetSubtitles() {
   const [inputMode, setInputMode] = useState<InputMode>("url");
   const [url, setUrl] = useState("");
   const [language, setLanguage] = useState("auto");
+  const [translateTo, setTranslateTo] = useState("none");
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -50,9 +60,14 @@ export function GetSubtitles() {
   const [srtFilename, setSrtFilename] = useState("subtitles.srt");
   const [loading, setLoading] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
+  const [translateOpen, setTranslateOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
+
+  const stepOrder = translateTo !== "none"
+    ? [...BASE_STEPS, ...TRANSLATE_STEPS, "done"]
+    : [...BASE_STEPS, "done"];
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -100,7 +115,7 @@ export function GetSubtitles() {
       const res = await fetch(`${BASE()}/api/subtitles/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), language }),
+        body: JSON.stringify({ url: url.trim(), language, translateTo }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to start job");
@@ -128,6 +143,7 @@ export function GetSubtitles() {
       const form = new FormData();
       form.append("file", file);
       form.append("language", language);
+      form.append("translateTo", translateTo);
 
       const res = await fetch(`${BASE()}/api/subtitles/upload`, {
         method: "POST",
@@ -363,8 +379,8 @@ export function GetSubtitles() {
           >
             {/* Step indicators */}
             <div className="flex items-center gap-2">
-              {STEP_ORDER.map((step, i) => {
-                const currentIdx = STEP_ORDER.indexOf(jobStatus ?? "audio");
+              {stepOrder.map((step, i) => {
+                const currentIdx = stepOrder.indexOf(jobStatus ?? "audio");
                 const isDone = i < currentIdx || jobStatus === "done";
                 const isActive = i === currentIdx && jobStatus !== "done" && jobStatus !== "error";
                 return (
@@ -377,7 +393,7 @@ export function GetSubtitles() {
                     )}>
                       {isDone ? <CheckCircle2 className="w-3.5 h-3.5" /> : i + 1}
                     </div>
-                    {i < STEP_ORDER.length - 1 && (
+                    {i < stepOrder.length - 1 && (
                       <div className={cn("flex-1 h-[2px] rounded transition-all", isDone ? "bg-teal-500/40" : "bg-white/8")} />
                     )}
                   </React.Fragment>

@@ -16,7 +16,7 @@ const PYTHON_ENV = { ...process.env, PYTHONUNBUFFERED: "1" };
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 
 // ── In-memory job store ──────────────────────────────────────────────────────
-type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "done" | "error";
+type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error";
 interface SrtJob {
   status: JobStatus;
   message: string;
@@ -24,6 +24,7 @@ interface SrtJob {
   error?: string;
   filename: string;
   createdAt: number;
+  translateTo?: string;
 }
 const jobs = new Map<string, SrtJob>();
 
@@ -172,6 +173,59 @@ ${rawSrt}
 Now listen to the full audio from 00:00:00 to ${durationSrt} and return the fully corrected and completed SRT:`;
 }
 
+function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLanguage: string): string {
+  const fromNote = fromLanguage === "auto" ? "its original language" : fromLanguage;
+  return `You are a professional subtitle translator. I will give you an SRT subtitle file written in ${fromNote}. Translate the subtitle text into ${toLanguage}.
+
+CRITICAL RULES:
+1. Keep EVERY timestamp line EXACTLY as-is — do NOT change any HH:MM:SS,mmm timestamps
+2. Keep EVERY entry number EXACTLY as-is
+3. Keep the exact same SRT structure (number, timestamp, translated text, blank line)
+4. Translate ONLY the subtitle text lines — nothing else
+5. Produce natural, fluent ${toLanguage} — not a word-for-word literal translation
+6. Preserve the meaning, tone, and context of the original speech
+7. Keep names of people, places, and proper nouns as they are (or use the standard ${toLanguage} spelling)
+8. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
+
+Here is the SRT to translate:
+---
+${correctedSrt}
+---
+
+Now return the fully translated SRT in ${toLanguage}:`;
+}
+
+function buildTranslationVerifyPrompt(originalSrt: string, translatedSrt: string, fromLanguage: string, toLanguage: string): string {
+  const fromNote = fromLanguage === "auto" ? "the original language" : fromLanguage;
+  return `You are an expert bilingual subtitle proofreader. I will give you two SRT files: the ORIGINAL (in ${fromNote}) and a TRANSLATED version (in ${toLanguage}). Your task is to verify the translation and fix any errors.
+
+Check every entry for:
+- Mistranslations (wrong meaning)
+- Missing content (original says something that is absent in the translation)
+- Added content (translation says something not in the original)
+- Unnatural or awkward ${toLanguage} phrasing
+- Names/proper nouns that were incorrectly changed
+- Timestamp or entry number changes (they must be identical to the original)
+
+RULES:
+- Keep ALL timestamps exactly as they appear in the original SRT — do NOT change them
+- Keep ALL entry numbers exactly as they appear in the original SRT
+- Fix ONLY the translation text — nothing else
+- Return ONLY the corrected translated SRT — no explanations, no markdown fences
+
+ORIGINAL SRT (${fromNote}):
+---
+${originalSrt}
+---
+
+TRANSLATED SRT (${toLanguage}) to verify and fix:
+---
+${translatedSrt}
+---
+
+Return the fully verified and corrected ${toLanguage} SRT:`;
+}
+
 // ── Normalize SRT timestamps ─────────────────────────────────────────────────
 // Fixes two classes of Gemini timestamp mistakes:
 //   1. Missing hours: "01:23,456" → "00:01:23,456"  (MM:SS,mmm → HH:MM:SS,mmm)
@@ -262,6 +316,7 @@ async function processAudio(
   audioPath: string,
   language: string,
   filename: string,
+  translateTo?: string,
   cleanup?: () => void,
 ) {
   const job = jobs.get(jobId);
@@ -378,11 +433,66 @@ async function processAudio(
       : cleanedRaw;
 
     // Normalize malformed timestamps then strip any hallucinated tail entries
-    const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal));
+    const correctedFinalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal));
 
-    job.status = "done";
-    job.message = "Subtitles ready!";
-    job.srt = finalSrt;
+    // Step 4 (optional): Translate the corrected SRT
+    if (translateTo && translateTo !== "none") {
+      job.status = "translating";
+      job.message = `Translating subtitles to ${translateTo}...`;
+
+      const translationPass = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: buildTranslationPrompt(correctedFinalSrt, language, translateTo) }],
+          },
+        ],
+        config: {
+          temperature: 0.2,
+          maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      });
+
+      const translatedRaw = translationPass.text?.trim() ?? "";
+      const translatedSrt = translatedRaw.length > 10
+        ? translatedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+        : correctedFinalSrt;
+
+      // Step 5: Verify the translation (text-only, no audio needed)
+      job.status = "verifying";
+      job.message = `Verifying ${translateTo} translation...`;
+
+      const verifyPass = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: buildTranslationVerifyPrompt(correctedFinalSrt, translatedSrt, language, translateTo) }],
+          },
+        ],
+        config: {
+          temperature: 0.1,
+          maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      });
+
+      const verifiedRaw = verifyPass.text?.trim() ?? "";
+      const verifiedSrt = verifiedRaw.length > 10
+        ? verifiedRaw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+        : translatedSrt;
+
+      const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
+      job.status = "done";
+      job.message = "Subtitles ready!";
+      job.srt = finalSrt;
+    } else {
+      job.status = "done";
+      job.message = "Subtitles ready!";
+      job.srt = correctedFinalSrt;
+    }
   } catch (err: any) {
     logger.error({ err }, "SRT generation error");
     job.status = "error";
@@ -399,7 +509,7 @@ async function processAudio(
 
 // ── Route: Generate from YouTube URL ────────────────────────────────────────
 router.post("/subtitles/generate", async (req: Request, res: Response) => {
-  const { url, language = "auto" } = req.body as { url: string; language?: string };
+  const { url, language = "auto", translateTo } = req.body as { url: string; language?: string; translateTo?: string };
 
   if (!url?.trim()) {
     res.status(400).json({ error: "url is required" });
@@ -413,12 +523,14 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
 
   const jobId = randomUUID();
   const audioDir = join(DOWNLOAD_DIR, `srt-yt-${jobId}`);
+  const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
 
   jobs.set(jobId, {
     status: "audio",
     message: "Downloading audio from YouTube...",
     filename: "subtitles.srt",
     createdAt: Date.now(),
+    translateTo: translateLang,
   });
 
   res.json({ jobId });
@@ -456,7 +568,7 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
         return;
       }
 
-      await processAudio(jobId, audioFile, language, "subtitles.srt", () => {
+      await processAudio(jobId, audioFile, language, "subtitles.srt", translateLang, () => {
         try { rmSync(audioDir, { recursive: true }); } catch {}
       });
     } catch (err: any) {
@@ -484,6 +596,8 @@ router.post(
     }
 
     const language: string = (req.body as any).language ?? "auto";
+    const translateTo: string | undefined = (req.body as any).translateTo;
+    const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
     const baseName = req.file.originalname.replace(/\.[^.]+$/, "");
     const srtFilename = `${baseName}-subtitles.srt`;
     const jobId = randomUUID();
@@ -493,13 +607,14 @@ router.post(
       message: "Uploading to AI...",
       filename: srtFilename,
       createdAt: Date.now(),
+      translateTo: translateLang,
     });
 
     res.json({ jobId });
 
     // Process in background — delete the temp file after use
     (async () => {
-      await processAudio(jobId, req.file!.path, language, srtFilename, () => {
+      await processAudio(jobId, req.file!.path, language, srtFilename, translateLang, () => {
         try { rmSync(req.file!.path); } catch {}
       });
     })();
