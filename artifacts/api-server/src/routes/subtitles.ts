@@ -16,7 +16,7 @@ const PYTHON_ENV = { ...process.env, PYTHONUNBUFFERED: "1" };
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 
 // ── In-memory job store ──────────────────────────────────────────────────────
-type JobStatus = "pending" | "audio" | "uploading" | "generating" | "done" | "error";
+type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "done" | "error";
 interface SrtJob {
   status: JobStatus;
   message: string;
@@ -111,6 +111,44 @@ Second subtitle entry text.
 Now transcribe the entire audio:`;
 }
 
+function buildCorrectionPrompt(rawSrt: string, language: string): string {
+  const langNote =
+    language === "auto"
+      ? "The audio and subtitles are in their original language — do NOT translate anything."
+      : `The audio and subtitles are in ${language} — do NOT translate anything.`;
+
+  return `You are an expert subtitle proofreader and corrector. I will give you an audio recording and a draft SRT subtitle file that was auto-generated from it.
+
+${langNote}
+
+Your task: Listen to the ENTIRE audio very carefully, then fix ALL errors in the SRT file.
+
+Common errors to fix:
+- Wrong words (mishearings, similar-sounding words mixed up)
+- Missing words or phrases that are clearly spoken but not in the SRT
+- Hallucinated words (text in the SRT that is NOT actually spoken in the audio)
+- Incorrect use of foreign language words when the correct native word was spoken (e.g., English "to" written instead of the correct native particle)
+- Wrong word forms (e.g., wrong verb endings, missing particles/suffixes)
+- Filler sounds or stumbles mistakenly transcribed as real words
+- Timestamp mismatches (subtitle appearing too early or too late by more than 0.5 seconds)
+- Incorrect word order
+
+IMPORTANT RULES:
+- Keep the exact same SRT format (number, timestamp, text, blank line)
+- Preserve all correct entries exactly as they are — only change what is wrong
+- Keep ALL timestamps as-is UNLESS there is a clear sync issue
+- Do NOT add translation or explanations
+- Do NOT summarize or shorten any entries
+- Return ONLY the corrected SRT content — no explanations, no markdown fences, no extra text
+
+Here is the draft SRT to correct:
+---
+${rawSrt}
+---
+
+Now listen to the audio and return the fully corrected SRT:`;
+}
+
 // ── Core processing function ─────────────────────────────────────────────────
 async function processAudio(
   jobId: string,
@@ -137,7 +175,7 @@ async function processAudio(
     const audioBuffer = readFileSync(audioPath);
     const audioBlob = new Blob([audioBuffer], { type: mimeType });
 
-    // Step: Upload to Gemini Files API
+    // Step 1: Upload to Gemini Files API
     job.status = "uploading";
     job.message = "Uploading audio to AI...";
 
@@ -162,17 +200,19 @@ async function processAudio(
       return;
     }
 
-    // Step: Generate SRT
+    const fileUri: string = fileInfo.uri;
+
+    // Step 2: Generate raw SRT
     job.status = "generating";
     job.message = "AI is transcribing audio...";
 
-    const result = await genAI.models.generateContent({
+    const firstPass = await genAI.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
         {
           role: "user",
           parts: [
-            { fileData: { mimeType, fileUri: fileInfo.uri } },
+            { fileData: { mimeType, fileUri } },
             { text: buildSrtPrompt(language) },
           ],
         },
@@ -180,21 +220,46 @@ async function processAudio(
       config: { temperature: 0.1, maxOutputTokens: 65536 },
     });
 
-    const srt = result.text?.trim() ?? "";
-    if (!srt) {
+    const rawSrt = firstPass.text?.trim() ?? "";
+    if (!rawSrt) {
       job.status = "error";
       job.error = "AI returned an empty transcript — please try again";
       return;
     }
 
-    const cleaned = srt
+    const cleanedRaw = rawSrt
       .replace(/^```[a-z]*\n?/i, "")
       .replace(/\n?```$/i, "")
       .trim();
 
+    // Step 3: Auto-correction pass — same audio + draft SRT → Gemini corrects mistakes
+    job.status = "correcting";
+    job.message = "AI is auto-correcting errors...";
+
+    const secondPass = await genAI.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { fileData: { mimeType, fileUri } },
+            { text: buildCorrectionPrompt(cleanedRaw, language) },
+          ],
+        },
+      ],
+      config: { temperature: 0.1, maxOutputTokens: 65536 },
+    });
+
+    const correctedSrt = secondPass.text?.trim() ?? "";
+
+    // If the correction pass fails or returns garbage, fall back to the first pass
+    const finalSrt = (correctedSrt && correctedSrt.length > 10)
+      ? correctedSrt.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim()
+      : cleanedRaw;
+
     job.status = "done";
     job.message = "Subtitles ready!";
-    job.srt = cleaned;
+    job.srt = finalSrt;
   } catch (err: any) {
     logger.error({ err }, "SRT generation error");
     job.status = "error";
