@@ -11,9 +11,42 @@ import { logger } from "../lib/logger";
 
 const router = Router();
 
-const PYTHON_BIN = process.env.PYTHON_BIN ?? "uv";
-const PYTHON_ENV = { ...process.env, PYTHONUNBUFFERED: "1" };
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
+
+// ── Python / yt-dlp environment (mirrors setup in youtube.ts) ────────────────
+// Make yt-dlp visible to Python without overriding system PATH in environments
+// where .pythonlibs does not exist (e.g. the Docker production container).
+const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
+
+function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
+  const pythonLibsBin = join(workspaceRoot, ".pythonlibs", "bin");
+  const pythonLibsLib = join(workspaceRoot, ".pythonlibs", "lib");
+
+  if (!existsSync(pythonLibsBin)) {
+    return { ...process.env, PYTHONUNBUFFERED: "1" };
+  }
+
+  let sitePackages = join(pythonLibsLib, "python3.11", "site-packages");
+  try {
+    const entries = readdirSync(pythonLibsLib);
+    const pyDir = entries.find((e) => /^python3\.\d+$/.test(e));
+    if (pyDir) sitePackages = join(pythonLibsLib, pyDir, "site-packages");
+  } catch {}
+
+  return {
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+    PATH: `${pythonLibsBin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+    PYTHONPATH: sitePackages,
+  };
+}
+
+const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
+const PYTHON_BIN =
+  process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+
+// Bot detection bypass: tv_embedded gives full format list + avoids bot-detection on server IPs
+const YTDLP_BASE_ARGS = ["--extractor-args", "youtube:player_client=tv_embedded,android,ios"];
 
 // ── In-memory job store ──────────────────────────────────────────────────────
 type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error" | "cancelled";
@@ -750,7 +783,8 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn(PYTHON_BIN, [
-          "run", "yt-dlp",
+          "-m", "yt_dlp",
+          ...YTDLP_BASE_ARGS,
           "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
           "--no-playlist", "--no-warnings",
           "-o", audioPattern, url.trim(),
