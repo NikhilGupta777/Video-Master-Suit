@@ -69,6 +69,8 @@ const YTDLP_BASE_ARGS: string[] = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "--sleep-requests", "1",
   "--sleep-interval",  "2",
+  "--remote-components", "ejs:github",
+  "--js-runtimes", "deno",
 ];
 
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
@@ -236,6 +238,10 @@ const upload = multer({
   storage: uploadStorage,
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 });
+
+function pickFirst(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function audioMimeType(ext: string): string {
@@ -926,11 +932,13 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       mkdirSync(audioDir, { recursive: true });
       // Use video title in filename so the downloaded SRT has a meaningful name
       const audioPattern = join(audioDir, "%(title)s.%(ext)s");
+      const cookieArgs = getSrtCookieArgs();
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn(PYTHON_BIN, [
           "-m", "yt_dlp",
           ...YTDLP_BASE_ARGS,
+          ...cookieArgs,
           "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
           "--no-playlist", "--no-warnings",
           "-o", audioPattern, url.trim(),
@@ -1048,7 +1056,12 @@ router.use((err: any, _req: Request, res: Response, next: NextFunction) => {
 
 // ── Route: Cancel a running job ───────────────────────────────────────────────
 router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
-  const job = jobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = jobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1065,7 +1078,12 @@ router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
 
 // ── Route: Poll job status ────────────────────────────────────────────────────
 router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
-  const job = jobs.get(req.params.jobId);
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = jobs.get(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1093,3 +1111,4 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
 });
 
 export default router;
+

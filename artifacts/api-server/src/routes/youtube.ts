@@ -197,6 +197,8 @@ const BASE_YTDLP_ARGS: string[] = [
   // Sleep between requests to avoid rate-limit bans
   "--sleep-requests", "1",
   "--sleep-interval", "2",
+  "--remote-components", "ejs:github",
+  "--js-runtimes", "deno",
 ];
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
@@ -468,6 +470,8 @@ const SUBS_YTDLP_ARGS = [
   ].join(";"),
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "--remote-components", "ejs:github",
+  "--js-runtimes", "deno",
 ];
 
 // Run yt-dlp for subtitle-only fetches (uses mweb/android — tv_embedded breaks subs)
@@ -2501,63 +2505,108 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   const jobRef = jobs.get(jobId)!;
   jobRef.status = "downloading";
 
-  const args = [
+  const cookieArgs = getYtdlpCookieArgs();
+  const baseClipArgs = [
     "--no-playlist",
     "--no-warnings",
     "--newline",
     "--progress",
-    "-f",
-    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-    "--merge-output-format",
-    "mp4",
     "--download-sections",
     `*${start}-${end}`,
-    "--force-keyframes-at-cuts",
     "-o",
     outputPath,
     url,
   ];
 
-  new Promise<void>((resolve, reject) => {
-    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...args], {
-      env: PYTHON_ENV,
-    });
-    let stderr = "";
+  const fastClipFormats = [
+    "best[ext=mp4][height<=720]",
+    "best[ext=mp4][height<=1080]",
+    "best[height<=720]",
+    "best[height<=1080]",
+  ];
+  const heavyClipFormats = [
+    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]",
+    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio",
+    "bestvideo[height<=1080]+bestaudio",
+  ];
 
-    proc.stdout?.on("data", (data: Buffer) => {
-      const lines = data.toString().split("\n");
-      for (const line of lines) {
-        const t = line.trim();
-        const progressMatch = t.match(/\[download\]\s+([\d.]+)%/);
-        if (progressMatch) {
-          jobRef.percent = Math.round(parseFloat(progressMatch[1]));
+  const runClipAttempt = (formatSelector: string, heavy: boolean): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const args = [
+        ...baseClipArgs.slice(0, 4),
+        "-f",
+        formatSelector,
+        ...(heavy ? ["--merge-output-format", "mp4", "--force-keyframes-at-cuts"] : []),
+        ...baseClipArgs.slice(4),
+      ];
+
+      const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...cookieArgs, ...args], {
+        env: PYTHON_ENV,
+      });
+      let stderr = "";
+
+      proc.stdout?.on("data", (data: Buffer) => {
+        const lines = data.toString().split("\n");
+        for (const line of lines) {
+          const t = line.trim();
+          const progressMatch = t.match(/\[download\]\s+([\d.]+)%/);
+          if (progressMatch) {
+            jobRef.percent = Math.round(parseFloat(progressMatch[1]));
+          }
+          const destMatch = t.match(
+            /\[(?:download|Merger)\] Destination:\s+(.+)/,
+          );
+          if (destMatch) {
+            jobRef.filePath = destMatch[1].trim();
+            jobRef.filename =
+              destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
+          }
+          if (t.includes("[Merger]")) {
+            jobRef.status = "merging";
+            jobRef.message = "Merging clip...";
+          }
         }
-        const destMatch = t.match(
-          /\[(?:download|Merger)\] Destination:\s+(.+)/,
-        );
-        if (destMatch) {
-          jobRef.filePath = destMatch[1].trim();
-          jobRef.filename =
-            destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
-        }
-        if (t.includes("[Merger]")) {
-          jobRef.status = "merging";
-          jobRef.message = "Merging clip...";
-        }
+      });
+      proc.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      proc.on("close", (code: number | null) => {
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`),
+          );
+      });
+      proc.on("error", (err: Error) => reject(err));
+    });
+
+  const clipAttempt = async (): Promise<void> => {
+    let lastErr: Error | null = null;
+
+    for (const formatSelector of fastClipFormats) {
+      try {
+        jobRef.message = "Downloading clip...";
+        await runClipAttempt(formatSelector, false);
+        return;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error("Fast clip download failed");
       }
-    });
-    proc.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
-    });
-    proc.on("close", (code: number | null) => {
-      if (code === 0) resolve();
-      else
-        reject(
-          new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`),
-        );
-    });
-    proc.on("error", (err: Error) => reject(err));
-  })
+    }
+
+    for (const formatSelector of heavyClipFormats) {
+      try {
+        jobRef.message = "Downloading and cutting clip...";
+        await runClipAttempt(formatSelector, true);
+        return;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error("Merged clip download failed");
+      }
+    }
+
+    throw lastErr ?? new Error("Clip download failed");
+  };
+
+  clipAttempt()
     .then(() => {
       const ext = ["mp4", "mkv", "webm"].find((e) =>
         existsSync(join(DOWNLOAD_DIR, `${jobId}.${e}`)),

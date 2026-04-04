@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       ca-certificates \
       gnupg \
+      unzip \
       ffmpeg \
       python3 \
       python3-pip \
@@ -16,6 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno so yt-dlp can solve YouTube JS challenges inside the container.
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && ln -s /root/.deno/bin/deno /usr/local/bin/deno
 
 # ── pnpm ─────────────────────────────────────────────────────────────────────
 RUN npm install -g pnpm@10
