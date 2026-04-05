@@ -1998,7 +1998,16 @@ async function runBhagwatRender(
   localAudioPath?: string,
   mode: "full" | "smart" = "full",
 ): Promise<void> {
-  const emit = (event: string, data: object) => job.emitter.emit(event, data);
+  const emit = (event: string, data: any) => {
+    if (event === "progress" && data && typeof data === "object") {
+      if (typeof data.percent === "number") job.progressPercent = data.percent;
+      if (typeof data.message === "string") job.progressMessage = data.message;
+    }
+    if (event === "jobError" && data && typeof data === "object") {
+      if (typeof data.message === "string") job.progressMessage = data.message;
+    }
+    job.emitter.emit(event, data);
+  };
   job.status = "running";
 
   const tmpId = randomUUID();

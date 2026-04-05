@@ -553,6 +553,7 @@ function BhagwatEditor({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const hasAutoReviewedRef = useRef(false);
   const reviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const sessionHydratedRef = useRef(false);
   // Always tracks the latest timeline so SSE handlers don't use stale closures
   const timelineRef = useRef<TimelineSegment[] | null>(null);
 
@@ -655,8 +656,36 @@ function BhagwatEditor({
     return false;
   }, [persistDoneState]);
 
+  useEffect(() => {
+    if (phase !== "rendering" || !renderJobId) return;
+
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      const resolved = await tryResolveRenderJob(renderJobId, videoTitle);
+      if (!stopped && resolved) {
+        if (esRef.current) {
+          esRef.current.close();
+          esRef.current = null;
+        }
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 3000);
+
+    void tick();
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [phase, renderJobId, tryResolveRenderJob, videoTitle]);
+
   // ── Session persistence: save active job to localStorage so refresh reconnects ─
   useEffect(() => {
+    if (!sessionHydratedRef.current) return;
     if (phase === "idle" || phase === "error") {
       localStorage.removeItem(SESSION_KEY);
       return;
@@ -667,6 +696,7 @@ function BhagwatEditor({
       url,
       sourceMode,
       savedAt: Date.now(),
+      ...(sourceMode === "upload" && uploadedFile && { uploadedFile }),
       ...(phase === "analyzing" && analyzeJobId && { analyzeJobId }),
       ...(phase === "analyzed" && { timeline, videoTitle, videoDuration, transcriptText }),
       ...(phase === "rendering" && {
@@ -686,7 +716,7 @@ function BhagwatEditor({
       }),
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  }, [phase, mode, url, sourceMode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage, downloadUrl, downloadFilename]);
+  }, [phase, mode, url, sourceMode, uploadedFile, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage, downloadUrl, downloadFilename]);
 
   // ── On mount: restore session and reconnect to running jobs ───────────────────
   useEffect(() => {
@@ -698,6 +728,13 @@ function BhagwatEditor({
       if (Date.now() - session.savedAt > 90 * 60 * 1000) {
         localStorage.removeItem(SESSION_KEY);
         return;
+      }
+
+      if (session.sourceMode === "upload") {
+        setSourceMode("upload");
+        if (session.uploadedFile?.audioId && session.uploadedFile?.filename) {
+          setUploadedFile(session.uploadedFile);
+        }
       }
 
       if (session.phase === "done" && session.downloadUrl && session.downloadFilename) {
@@ -719,6 +756,9 @@ function BhagwatEditor({
         setMode(session.mode ?? "full");
         if (session.url) setUrl(session.url);
         setSourceMode(session.sourceMode ?? "youtube");
+        if (session.sourceMode === "upload" && session.uploadedFile?.audioId && session.uploadedFile?.filename) {
+          setUploadedFile(session.uploadedFile);
+        }
         setTimeline(session.timeline);
         setVideoTitle(session.videoTitle ?? "");
         setVideoDuration(session.videoDuration ?? 0);
@@ -732,6 +772,9 @@ function BhagwatEditor({
         setMode(session.mode ?? "full");
         if (session.url) setUrl(session.url);
         setSourceMode(session.sourceMode ?? "youtube");
+        if (session.sourceMode === "upload" && session.uploadedFile?.audioId && session.uploadedFile?.filename) {
+          setUploadedFile(session.uploadedFile);
+        }
         setPhase("analyzing");
         setSteps({ metadata: { status: "idle", message: "" }, transcript: { status: "idle", message: "" }, ai: { status: "idle", message: "" } });
         setAnalyzeJobId(session.analyzeJobId);
@@ -749,14 +792,9 @@ function BhagwatEditor({
           const d = JSON.parse((e as MessageEvent).data);
           setErrorMsg(d.message ?? "Analysis failed"); setPhase("error"); es.close();
         });
-        es.onerror = async () => {
+        es.onerror = () => {
           if (es.readyState === EventSource.CONNECTING) {
             setSseReconnecting(true);
-            await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
-            return;
-          }
-          if (await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "")) {
-            es.close();
             return;
           }
           localStorage.removeItem(SESSION_KEY); setPhase("idle");
@@ -768,6 +806,9 @@ function BhagwatEditor({
         setMode(session.mode ?? "full");
         if (session.url) setUrl(session.url);
         setSourceMode(session.sourceMode ?? "youtube");
+        if (session.sourceMode === "upload" && session.uploadedFile?.audioId && session.uploadedFile?.filename) {
+          setUploadedFile(session.uploadedFile);
+        }
         if (Array.isArray(session.timeline)) {
           setTimeline(session.timeline); setVideoTitle(session.videoTitle ?? ""); setVideoDuration(session.videoDuration ?? 0);
         }
@@ -775,6 +816,7 @@ function BhagwatEditor({
         setRenderPercent(session.renderPercent ?? 0);
         setRenderMessage("Reconnecting to render job…");
         setPhase("rendering");
+        void tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
         const es = new EventSource(`${BASE}/api/bhagwat/render-status/${session.renderJobId}`);
         esRef.current = es;
         es.addEventListener("progress", e => { setSseReconnecting(false); const d = JSON.parse(e.data); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
@@ -792,12 +834,22 @@ function BhagwatEditor({
           const d = JSON.parse((e as MessageEvent).data);
           setErrorMsg(d.message ?? "Render failed"); setPhase("error"); es.close();
         });
-        es.onerror = () => {
-          if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
-          localStorage.removeItem(SESSION_KEY); setPhase("idle");
+        es.onerror = async () => {
+          if (es.readyState === EventSource.CONNECTING) {
+            setSseReconnecting(true);
+            await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
+            return;
+          }
+          if (await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "")) {
+            es.close();
+            return;
+          }
+          localStorage.removeItem(SESSION_KEY);
+          setPhase("idle");
         };
       }
     } catch { localStorage.removeItem(SESSION_KEY); }
+    finally { sessionHydratedRef.current = true; }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
