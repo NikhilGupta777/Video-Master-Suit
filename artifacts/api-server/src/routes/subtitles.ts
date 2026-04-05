@@ -47,8 +47,11 @@ const PYTHON_BIN =
 
 // ── yt-dlp config (mirrors youtube.ts / bhagwat.ts) ─────────────────────────
 const YTDLP_PROXY        = process.env.YTDLP_PROXY ?? "";
+const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
 const YTDLP_PO_TOKEN     = process.env.YTDLP_PO_TOKEN ?? "";
 const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
+const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_FILE =
   process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
 
@@ -75,18 +78,49 @@ const YTDLP_BASE_ARGS: string[] = [
 
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
 
-if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+if (HAS_DYNAMIC_POT_PROVIDER) {
   YTDLP_BASE_ARGS.push(
     "--extractor-args",
-    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    `youtubepot-bgutilhttp:base_url=${YTDLP_POT_PROVIDER_URL}`,
   );
-} else {
-  // tv_embedded is the most reliable client on AWS/datacenter IPs in 2025/2026.
-  // android_vr is a strong secondary. Exclude dead android_sdkless.
-  YTDLP_BASE_ARGS.push(
+}
+
+function getDefaultSrtYoutubeExtractorArgs(): string[] {
+  if (HAS_DYNAMIC_POT_PROVIDER) {
+    return [
+      "--extractor-args",
+      "youtube:player_client=web,web_embedded,mweb",
+    ];
+  }
+  if (HAS_STATIC_PO_TOKEN) {
+    return [
+      "--extractor-args",
+      `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    ];
+  }
+  return [
     "--extractor-args",
     "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
-  );
+  ];
+}
+
+function getSrtYoutubeFallbacks(): string[][] {
+  if (HAS_DYNAMIC_POT_PROVIDER || HAS_STATIC_PO_TOKEN) {
+    return [
+      ["--extractor-args", "youtube:player_client=web,web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=mweb,ios"],
+      ["--extractor-args", "youtube:player_client=ios"],
+      ["--extractor-args", "youtube:player_client=android_vr"],
+    ];
+  }
+  return [
+    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=mweb"],
+    ["--extractor-args", "youtube:player_client=ios"],
+  ];
 }
 
 // Return cookie args only when the cookies file exists and is a valid Netscape file.
@@ -112,19 +146,7 @@ function isSrtYtBlocked(msg: string): boolean {
 
 // Fallback clients ordered by reliability on AWS/datacenter IPs.
 // tv_embedded (YouTube TV embedded player) is the least bot-checked on server IPs.
-const SRT_YTDLP_FALLBACKS: string[][] = [
-  ["--extractor-args", "youtube:player_client=tv_embedded"],
-  ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-  ["--extractor-args", "youtube:player_client=android_vr"],
-  ["--extractor-args", "youtube:player_client=mweb"],
-  ["--extractor-args", "youtube:player_client=android_vr,mweb"],
-  ["--extractor-args", "youtube:player_client=ios"],
-  ["--extractor-args", "youtube:player_client=web_embedded"],
-  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-  ["--extractor-args", "youtube:player_client=android"],
-  ["--extractor-args", "youtube:player_client=ios,web_embedded"],
-  ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
-];
+const SRT_YTDLP_FALLBACKS: string[][] = getSrtYoutubeFallbacks();
 
 /**
  * Run yt-dlp to download audio for a subtitles job.
@@ -157,8 +179,10 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
   }
 
   const cookieArgs = getSrtCookieArgs();
-  const attemptPlans: string[][] = [[]];
-  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+  const defaultYoutubeArgs = getDefaultSrtYoutubeExtractorArgs();
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
@@ -264,6 +288,11 @@ function isAiConfigured(): boolean {
 
 // 15-minute timeout — long audio files can take many minutes for Gemini to process
 const GEMINI_TIMEOUT_MS = 15 * 60 * 1000;
+const GEMINI_TEXT_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+] as const;
 
 function getGenAI(): GoogleGenAI | null {
   // Prefer direct API key — more reliable than the integration proxy
@@ -279,6 +308,41 @@ function getGenAI(): GoogleGenAI | null {
     });
   }
   return null;
+}
+
+function shouldRetryWithLighterGeminiModel(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit/i.test(msg);
+}
+
+async function generateGeminiTextWithFallback(
+  genAI: GoogleGenAI,
+  requestFactory: (model: string) => any,
+  label: string,
+): Promise<string> {
+  let lastErr: unknown;
+
+  for (let i = 0; i < GEMINI_TEXT_MODELS.length; i++) {
+    const model = GEMINI_TEXT_MODELS[i];
+    try {
+      const result = await genAI.models.generateContent(requestFactory(model));
+      return result.text?.trim() ?? "";
+    } catch (err) {
+      lastErr = err;
+      const canRetry =
+        i < GEMINI_TEXT_MODELS.length - 1 &&
+        shouldRetryWithLighterGeminiModel(err);
+      logger.warn(
+        { err, model, label },
+        canRetry
+          ? `${label} failed, retrying with lighter Gemini model`
+          : `${label} failed`,
+      );
+      if (!canRetry) throw err;
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
 }
 
 function buildSrtPrompt(language: string, durationSrt: string): string {
@@ -741,24 +805,26 @@ async function processAudio(
     job.status = "generating";
     job.message = "AI is transcribing audio...";
 
-    const firstPass = await genAI.models.generateContent({
-      model: "gemini-2.5-pro",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { fileData: { mimeType, fileUri } },
-            { text: buildSrtPrompt(language, durationSrt) },
-          ],
+    const rawSrt = await generateGeminiTextWithFallback(
+      genAI,
+      (model) => ({
+        model,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { fileData: { mimeType, fileUri } },
+              { text: buildSrtPrompt(language, durationSrt) },
+            ],
+          },
+        ],
+        config: {
+          temperature: 0.1,
+          maxOutputTokens: 65536,
         },
-      ],
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 65536,
-      },
-    });
-
-    const rawSrt = firstPass.text?.trim() ?? "";
+      }),
+      "Initial subtitle transcription",
+    );
     if (!rawSrt) {
       job.status = "error";
       job.error = "AI returned an empty transcript — please try again";
@@ -772,24 +838,26 @@ async function processAudio(
     job.status = "correcting";
     job.message = "AI is auto-correcting errors...";
 
-    const secondPass = await genAI.models.generateContent({
-      model: "gemini-2.5-pro",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { fileData: { mimeType, fileUri } },
-            { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) },
-          ],
+    const correctedSrt = await generateGeminiTextWithFallback(
+      genAI,
+      (model) => ({
+        model,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { fileData: { mimeType, fileUri } },
+              { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) },
+            ],
+          },
+        ],
+        config: {
+          temperature: 0.1,
+          maxOutputTokens: 65536,
         },
-      ],
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 65536,
-      },
-    });
-
-    const correctedSrt = secondPass.text?.trim() ?? "";
+      }),
+      "Subtitle correction pass",
+    );
 
     // If the correction pass fails or returns garbage, fall back to the first pass
     const rawFinal = (correctedSrt && correctedSrt.length > 10)
@@ -817,21 +885,23 @@ async function processAudio(
       job.status = "translating";
       job.message = `Translating subtitles to ${translateTo}...`;
 
-      const translationPass = await genAI.models.generateContent({
-        model: "gemini-2.5-pro",
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: buildTranslationPrompt(correctedFinalSrt, language, translateTo) }],
+      const translatedRaw = await generateGeminiTextWithFallback(
+        genAI,
+        (model) => ({
+          model,
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: buildTranslationPrompt(correctedFinalSrt, language, translateTo) }],
+            },
+          ],
+          config: {
+            temperature: 0.2,
+            maxOutputTokens: 65536,
           },
-        ],
-        config: {
-          temperature: 0.2,
-          maxOutputTokens: 65536,
-        },
-      });
-
-      const translatedRaw = translationPass.text?.trim() ?? "";
+        }),
+        "Subtitle translation pass",
+      );
       const translatedClean = translatedRaw.length > 10
         ? stripFences(translatedRaw)
         : correctedFinalSrt;
@@ -843,21 +913,23 @@ async function processAudio(
       job.status = "verifying";
       job.message = `Verifying ${translateTo} translation...`;
 
-      const verifyPass = await genAI.models.generateContent({
-        model: "gemini-2.5-pro",
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: buildTranslationVerifyPrompt(correctedFinalSrt, translatedSrt, language, translateTo) }],
+      const verifiedRaw = await generateGeminiTextWithFallback(
+        genAI,
+        (model) => ({
+          model,
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: buildTranslationVerifyPrompt(correctedFinalSrt, translatedSrt, language, translateTo) }],
+            },
+          ],
+          config: {
+            temperature: 0.1,
+            maxOutputTokens: 65536,
           },
-        ],
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 65536,
-        },
-      });
-
-      const verifiedRaw = verifyPass.text?.trim() ?? "";
+        }),
+        "Subtitle verification pass",
+      );
       const verifiedClean = verifiedRaw.length > 10
         ? stripFences(verifiedRaw)
         : translatedSrt;
@@ -932,39 +1004,11 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       mkdirSync(audioDir, { recursive: true });
       // Use video title in filename so the downloaded SRT has a meaningful name
       const audioPattern = join(audioDir, "%(title)s.%(ext)s");
-      const cookieArgs = getSrtCookieArgs();
-
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(PYTHON_BIN, [
-          "-m", "yt_dlp",
-          ...YTDLP_BASE_ARGS,
-          ...cookieArgs,
-          "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
-          "--no-playlist", "--no-warnings",
-          "-o", audioPattern, url.trim(),
-        ], { env: PYTHON_ENV });
-
-        let stderr = "";
-        proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-
-        // Poll for cancellation every 500ms and kill yt-dlp if the job was cancelled
-        const cancelPoll = setInterval(() => {
-          if (job.cancelled) {
-            clearInterval(cancelPoll);
-            try { proc.kill("SIGTERM"); } catch {}
-          }
-        }, 500);
-
-        proc.on("close", (code) => {
-          clearInterval(cancelPoll);
-          if (job.cancelled) {
-            resolve(); // Cancelled — treat as clean exit; status already set
-          } else {
-            code === 0 ? resolve() : reject(new Error(stderr.slice(-400)));
-          }
-        });
-        proc.on("error", (err) => { clearInterval(cancelPoll); reject(err); });
-      });
+      await runYtDlpAudio([
+        "-f", "bestaudio/best",
+        "--no-playlist", "--no-warnings",
+        "-o", audioPattern, url.trim(),
+      ], job);
 
       // Bail out if cancelled during download
       if (job.cancelled) {

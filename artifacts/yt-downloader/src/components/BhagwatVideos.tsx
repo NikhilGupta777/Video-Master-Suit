@@ -584,9 +584,80 @@ function BhagwatEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadedFile?.audioId]);
 
+  const persistDoneState = useCallback((nextDownloadUrl: string, nextDownloadFilename: string, nextVideoTitle?: string) => {
+    const session = {
+      phase: "done",
+      mode,
+      url,
+      sourceMode,
+      savedAt: Date.now(),
+      downloadUrl: nextDownloadUrl,
+      downloadFilename: nextDownloadFilename,
+      videoTitle: nextVideoTitle ?? videoTitle,
+      ...(timeline && { timeline }),
+      ...(videoDuration ? { videoDuration } : {}),
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+
+    const entry: HistoryEntry = {
+      id: crypto.randomUUID(),
+      title: (nextVideoTitle ?? videoTitle) || nextDownloadFilename,
+      filename: nextDownloadFilename,
+      downloadUrl: nextDownloadUrl,
+      timestamp: Date.now(),
+    };
+    setHistory(prev => {
+      const deduped = prev.filter(existing => existing.downloadUrl !== nextDownloadUrl);
+      const updated = [entry, ...deduped].slice(0, MAX_HISTORY);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, [mode, sourceMode, timeline, url, videoDuration, videoTitle]);
+
+  const tryResolveRenderJob = useCallback(async (jobId: string, nextVideoTitle?: string) => {
+    try {
+      const res = await fetch(`${BASE}/api/bhagwat/render-state/${jobId}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        return false;
+      }
+      const payload = await res.json();
+
+      if (typeof payload.percent === "number") {
+        setRenderPercent(payload.percent);
+      }
+      if (typeof payload.message === "string" && payload.message) {
+        setRenderMessage(payload.message);
+      }
+
+      if (payload.status === "done" && payload.downloadUrl) {
+        const absoluteDownloadUrl = `${BASE}${payload.downloadUrl}`;
+        const filename = payload.filename ?? "bhagwat_video.mp4";
+        setDownloadUrl(absoluteDownloadUrl);
+        setDownloadFilename(filename);
+        persistDoneState(absoluteDownloadUrl, filename, nextVideoTitle);
+        setSseReconnecting(false);
+        setPhase("done");
+        return true;
+      }
+
+      if (payload.status === "error" || payload.status === "expired") {
+        setSseReconnecting(false);
+        setErrorMsg(payload.message ?? (payload.status === "expired" ? "Rendered file expired" : "Render failed"));
+        setPhase("error");
+        return true;
+      }
+    } catch {
+      // Ignore transient probe failures and let the caller continue reconnect logic.
+    }
+
+    return false;
+  }, [persistDoneState]);
+
   // ── Session persistence: save active job to localStorage so refresh reconnects ─
   useEffect(() => {
-    if (phase === "idle" || phase === "error" || phase === "done") {
+    if (phase === "idle" || phase === "error") {
       localStorage.removeItem(SESSION_KEY);
       return;
     }
@@ -606,9 +677,16 @@ function BhagwatEditor({
         videoTitle,
         videoDuration,
       }),
+      ...(phase === "done" && downloadUrl && downloadFilename && {
+        downloadUrl,
+        downloadFilename,
+        timeline,
+        videoTitle,
+        videoDuration,
+      }),
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  }, [phase, mode, url, sourceMode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage]);
+  }, [phase, mode, url, sourceMode, analyzeJobId, renderJobId, timeline, videoTitle, videoDuration, transcriptText, renderPercent, renderMessage, downloadUrl, downloadFilename]);
 
   // ── On mount: restore session and reconnect to running jobs ───────────────────
   useEffect(() => {
@@ -619,6 +697,21 @@ function BhagwatEditor({
       // Don't restore sessions older than 90 minutes
       if (Date.now() - session.savedAt > 90 * 60 * 1000) {
         localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+
+      if (session.phase === "done" && session.downloadUrl && session.downloadFilename) {
+        setMode(session.mode ?? "full");
+        if (session.url) setUrl(session.url);
+        setSourceMode(session.sourceMode ?? "youtube");
+        if (Array.isArray(session.timeline)) {
+          setTimeline(session.timeline);
+        }
+        setVideoTitle(session.videoTitle ?? "");
+        setVideoDuration(session.videoDuration ?? 0);
+        setDownloadUrl(session.downloadUrl);
+        setDownloadFilename(session.downloadFilename);
+        setPhase("done");
         return;
       }
 
@@ -656,8 +749,16 @@ function BhagwatEditor({
           const d = JSON.parse((e as MessageEvent).data);
           setErrorMsg(d.message ?? "Analysis failed"); setPhase("error"); es.close();
         });
-        es.onerror = () => {
-          if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+        es.onerror = async () => {
+          if (es.readyState === EventSource.CONNECTING) {
+            setSseReconnecting(true);
+            await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
+            return;
+          }
+          if (await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "")) {
+            es.close();
+            return;
+          }
           localStorage.removeItem(SESSION_KEY); setPhase("idle");
         };
         return;
@@ -680,7 +781,10 @@ function BhagwatEditor({
         es.addEventListener("done", e => {
           setSseReconnecting(false);
           const d = JSON.parse(e.data);
-          setDownloadUrl(`${BASE}${d.downloadUrl}`); setDownloadFilename(d.filename ?? "bhagwat_video.mp4");
+          const absoluteDownloadUrl = `${BASE}${d.downloadUrl}`;
+          const filename = d.filename ?? "bhagwat_video.mp4";
+          setDownloadUrl(absoluteDownloadUrl); setDownloadFilename(filename);
+          persistDoneState(absoluteDownloadUrl, filename, session.videoTitle ?? "");
           setPhase("done"); es.close();
         });
         es.addEventListener("jobError", e => {
@@ -781,24 +885,6 @@ function BhagwatEditor({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, timeline, autonomousMode]);
-
-  useEffect(() => {
-    if (phase === "done" && downloadUrl && downloadFilename) {
-      const entry: HistoryEntry = {
-        id: crypto.randomUUID(),
-        title: videoTitle || downloadFilename,
-        filename: downloadFilename,
-        downloadUrl,
-        timestamp: Date.now(),
-      };
-      // Use functional update so we never close over a stale `history` value
-      setHistory(prev => {
-        const updated = [entry, ...prev].slice(0, MAX_HISTORY);
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
-        return updated;
-      });
-    }
-  }, [phase, downloadUrl, downloadFilename, videoTitle]);
 
   const handleAnalyze = async () => {
     if (sourceMode === "youtube") {
@@ -1004,8 +1090,11 @@ function BhagwatEditor({
       es.addEventListener("done", e => {
         setSseReconnecting(false);
         const d = JSON.parse(e.data);
-        setDownloadUrl(`${BASE}${d.downloadUrl}`);
-        setDownloadFilename(d.filename ?? "bhagwat_video.mp4");
+        const absoluteDownloadUrl = `${BASE}${d.downloadUrl}`;
+        const filename = d.filename ?? "bhagwat_video.mp4";
+        setDownloadUrl(absoluteDownloadUrl);
+        setDownloadFilename(filename);
+        persistDoneState(absoluteDownloadUrl, filename);
         setPhase("done");
         es.close();
       });
@@ -1016,8 +1105,16 @@ function BhagwatEditor({
         setPhase("error");
         es.close();
       });
-      es.onerror = () => {
-        if (es.readyState === EventSource.CONNECTING) { setSseReconnecting(true); return; }
+      es.onerror = async () => {
+        if (es.readyState === EventSource.CONNECTING) {
+          setSseReconnecting(true);
+          await tryResolveRenderJob(jobId, videoTitle);
+          return;
+        }
+        if (await tryResolveRenderJob(jobId, videoTitle)) {
+          es.close();
+          return;
+        }
         setSseReconnecting(false);
         setErrorMsg("Connection error during render — please try again");
         setPhase("error"); es.close();
@@ -1500,6 +1597,7 @@ function BhagwatEditor({
             <Button
               size="sm"
               onClick={() => {
+                localStorage.removeItem(SESSION_KEY);
                 setPhase("idle"); setTimeline(null); setDownloadUrl(null);
                 setUrl(""); setSuggestions([]); setReviewText("");
                 if (uploadedFile) {

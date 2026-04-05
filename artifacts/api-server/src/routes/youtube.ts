@@ -64,12 +64,15 @@ const YTDLP_COOKIES_FILE =
 // Optional HTTP/SOCKS proxy for yt-dlp (critical for cloud/datacenter IPs blocked by YouTube).
 // Set YTDLP_PROXY=socks5://user:pass@host:port  or  http://host:port
 const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
+const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
 
 // Optional po_token + visitor_data pair to bypass YouTube bot-detection on server IPs.
 // Generate with: https://github.com/iv-org/youtube-trusted-session-generator
 // Then set: YTDLP_PO_TOKEN=<token>  and  YTDLP_VISITOR_DATA=<data>
 const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
 const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
+const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 
 // YTDLP_COOKIES_BASE64: base64-encoded Netscape cookie file content.
 // Export cookies from a YouTube-logged-in browser using a cookie exporter extension,
@@ -206,22 +209,49 @@ if (YTDLP_PROXY) {
   BASE_YTDLP_ARGS.push("--proxy", YTDLP_PROXY);
 }
 
-// Inject po_token + visitor_data if configured (bypasses YouTube bot detection on server IPs).
-// Format confirmed by yt-dlp wiki: web.gvs+TOKEN
-if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+if (HAS_DYNAMIC_POT_PROVIDER) {
   BASE_YTDLP_ARGS.push(
     "--extractor-args",
-    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    `youtubepot-bgutilhttp:base_url=${YTDLP_POT_PROVIDER_URL}`,
   );
-} else {
-  // tv_embedded is the most reliable client on datacenter/AWS IPs in 2025/2026.
-  // It uses the YouTube TV embedded player API which YouTube bot-detection is least
-  // strict about for non-residential IPs. android_vr is a strong second.
-  // Exclude dead android_sdkless client phased out by YouTube in 2025/2026.
-  BASE_YTDLP_ARGS.push(
+}
+
+function getDefaultYouTubeExtractorArgs(): string[] {
+  if (HAS_DYNAMIC_POT_PROVIDER) {
+    return [
+      "--extractor-args",
+      "youtube:player_client=web,web_embedded,mweb",
+    ];
+  }
+  if (HAS_STATIC_PO_TOKEN) {
+    return [
+      "--extractor-args",
+      `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    ];
+  }
+  return [
     "--extractor-args",
     "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
-  );
+  ];
+}
+
+function getYouTubeFallbacks(): string[][] {
+  if (HAS_DYNAMIC_POT_PROVIDER || HAS_STATIC_PO_TOKEN) {
+    return [
+      ["--extractor-args", "youtube:player_client=web,web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=mweb,ios"],
+      ["--extractor-args", "youtube:player_client=ios"],
+      ["--extractor-args", "youtube:player_client=android_vr"],
+    ];
+  }
+  return [
+    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=mweb"],
+    ["--extractor-args", "youtube:player_client=ios"],
+  ];
 }
 
 function getYtdlpCookieArgs(): string[] {
@@ -294,26 +324,22 @@ function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
 async function runYtDlp(args: string[]): Promise<string> {
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   const cookieArgs = getYtdlpCookieArgs();
+  const isYt = !!(maybeUrl && isYouTubeUrl(maybeUrl));
+  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
 
-  const attemptPlans: string[][] = [[]];
-  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
+  if (!isYt) {
+    attemptPlans.length = 0;
+    if (cookieArgs.length) attemptPlans.push(cookieArgs);
+    attemptPlans.push([]);
+  }
 
   // Fallback player clients ordered by reliability on AWS/GCP datacenter IPs.
   // tv_embedded (YouTube TV embedded player) is least bot-checked on server IPs.
   // android_vr, mweb, ios are secondary options. web requires po_token on server IPs.
-  const youtubeFallbacks: string[][] = [
-    ["--extractor-args", "youtube:player_client=tv_embedded"],
-    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-    ["--extractor-args", "youtube:player_client=android_vr"],
-    ["--extractor-args", "youtube:player_client=mweb"],
-    ["--extractor-args", "youtube:player_client=android_vr,mweb"],
-    ["--extractor-args", "youtube:player_client=ios"],
-    ["--extractor-args", "youtube:player_client=web_embedded"],
-    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-    ["--extractor-args", "youtube:player_client=android"],
-    ["--extractor-args", "youtube:player_client=ios,web_embedded"],
-    ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
-  ];
+  const youtubeFallbacks: string[][] = getYouTubeFallbacks();
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
@@ -339,7 +365,7 @@ async function runYtDlp(args: string[]): Promise<string> {
   }
 
   // Only try extractor fallback strategies if we are in a YouTube block scenario.
-  if (maybeUrl && isYouTubeUrl(maybeUrl) && lastErr) {
+  if (isYt && lastErr) {
     for (const fallback of youtubeFallbacks) {
       const plans = cookieArgs.length
         ? [[...cookieArgs, ...fallback], fallback]
@@ -359,6 +385,117 @@ async function runYtDlp(args: string[]): Promise<string> {
   }
 
   throw lastErr ?? new Error("yt-dlp failed");
+}
+
+function scoreYtFormat(fmt: any): number {
+  const hasVideo = fmt?.vcodec && fmt.vcodec !== "none" ? 1 : 0;
+  const hasAudio = fmt?.acodec && fmt.acodec !== "none" ? 1 : 0;
+  const height = Number(fmt?.height ?? 0);
+  const width = Number(fmt?.width ?? 0);
+  const fps = Number(fmt?.fps ?? 0);
+  const filesize = Number(
+    fmt?.filesize ?? fmt?.filesize_approx ?? 0,
+  );
+  return (
+    height * 1_000_000 +
+    width * 1_000 +
+    fps * 10 +
+    hasVideo * 5 +
+    hasAudio * 5 +
+    Math.min(filesize, 9_999_999)
+  );
+}
+
+function mergeSubtitleMaps(
+  baseMap: Record<string, any> | undefined,
+  incomingMap: Record<string, any> | undefined,
+): Record<string, any> | undefined {
+  if (!baseMap && !incomingMap) return undefined;
+  return {
+    ...(baseMap ?? {}),
+    ...(incomingMap ?? {}),
+  };
+}
+
+function mergeMetadataCandidates(candidates: any[]): any {
+  if (candidates.length === 0) {
+    throw new Error("No metadata candidates to merge");
+  }
+
+  const richest = [...candidates].sort((a, b) => {
+    const aCount = Array.isArray(a?.formats) ? a.formats.length : 0;
+    const bCount = Array.isArray(b?.formats) ? b.formats.length : 0;
+    return bCount - aCount;
+  })[0];
+
+  const formatMap = new Map<string, any>();
+  for (const candidate of candidates) {
+    for (const fmt of candidate?.formats ?? []) {
+      const key = String(fmt?.format_id ?? "");
+      if (!key) continue;
+      const prev = formatMap.get(key);
+      if (!prev || scoreYtFormat(fmt) > scoreYtFormat(prev)) {
+        formatMap.set(key, fmt);
+      }
+    }
+  }
+
+  return {
+    ...richest,
+    id: richest?.id ?? candidates[0]?.id,
+    title:
+      candidates.find((c) => c?.title)?.title ??
+      richest?.title ??
+      candidates[0]?.title,
+    duration:
+      candidates.find((c) => c?.duration != null)?.duration ??
+      richest?.duration ??
+      candidates[0]?.duration,
+    thumbnail:
+      candidates.find((c) => c?.thumbnail)?.thumbnail ??
+      richest?.thumbnail ??
+      candidates[0]?.thumbnail,
+    thumbnails:
+      candidates.find((c) => Array.isArray(c?.thumbnails) && c.thumbnails.length)
+        ?.thumbnails ??
+      richest?.thumbnails ??
+      candidates[0]?.thumbnails,
+    uploader:
+      candidates.find((c) => c?.uploader)?.uploader ??
+      richest?.uploader ??
+      candidates[0]?.uploader,
+    channel:
+      candidates.find((c) => c?.channel)?.channel ??
+      richest?.channel ??
+      candidates[0]?.channel,
+    view_count:
+      candidates.find((c) => c?.view_count != null)?.view_count ??
+      richest?.view_count ??
+      candidates[0]?.view_count,
+    upload_date:
+      candidates.find((c) => c?.upload_date)?.upload_date ??
+      richest?.upload_date ??
+      candidates[0]?.upload_date,
+    description:
+      candidates.find((c) => c?.description)?.description ??
+      richest?.description ??
+      candidates[0]?.description,
+    subtitles: candidates.reduce(
+      (acc, candidate) => mergeSubtitleMaps(acc, candidate?.subtitles),
+      undefined as Record<string, any> | undefined,
+    ),
+    automatic_captions: candidates.reduce(
+      (acc, candidate) =>
+        mergeSubtitleMaps(acc, candidate?.automatic_captions),
+      undefined as Record<string, any> | undefined,
+    ),
+    formats: [...formatMap.values()],
+  };
+}
+
+async function runYtDlpMetadata(url: string): Promise<any> {
+  const raw = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+  return JSON.parse(raw);
 }
 
 // Fetch a URL and return its body as a string
@@ -659,7 +796,8 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
   const hasCookies = getYtdlpCookieArgs().length > 0;
   const hasCookiesBase64 = !!YTDLP_COOKIES_BASE64;
   const hasProxy = !!YTDLP_PROXY;
-  const hasPoToken = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
+  const hasPoToken = HAS_STATIC_PO_TOKEN;
+  const hasPotProvider = HAS_DYNAMIC_POT_PROVIDER;
 
   let ytdlpVersion = "unknown";
   try {
@@ -672,8 +810,10 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
     });
   } catch {}
 
-  const activeClient = hasPoToken
-    ? "web+web_embedded (po_token mode)"
+  const activeClient = hasPotProvider
+    ? "web+web_embedded (dynamic pot provider mode)"
+    : hasPoToken
+    ? "web+web_embedded (static po_token mode)"
     : "tv_embedded,android_vr,mweb (server-IP mode)";
 
   res.json({
@@ -684,11 +824,14 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
       cookiesFromEnvVar: hasCookiesBase64,
       proxy: hasProxy,
       poToken: hasPoToken,
+      potProvider: hasPotProvider,
     },
     proxy: hasProxy ? YTDLP_PROXY.replace(/:([^@:]+)@/, ":***@") : null,
+    potProviderUrl: hasPotProvider ? YTDLP_POT_PROVIDER_URL : null,
     recommendations: [
       ...(!hasCookies ? ["Set YTDLP_COOKIES_BASE64 with base64-encoded YouTube cookies (most reliable fix for AWS IPs)"] : []),
-      ...(!hasPoToken ? ["Or set YTDLP_PO_TOKEN + YTDLP_VISITOR_DATA from youtube-trusted-session-generator"] : []),
+      ...(!hasPotProvider && !hasPoToken ? ["Set YTDLP_POT_PROVIDER_URL and install bgutil-ytdlp-pot-provider for dynamic YouTube PO tokens"] : []),
+      ...(!hasPotProvider && !hasPoToken ? ["Or set YTDLP_PO_TOKEN + YTDLP_VISITOR_DATA from youtube-trusted-session-generator"] : []),
       ...(!hasProxy ? ["Or set YTDLP_PROXY to route through a residential/non-datacenter IP"] : []),
     ],
     cookieFilePath: YTDLP_COOKIES_FILE,
@@ -717,13 +860,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
   }
 
   try {
-    const json = await runYtDlp([
-      "--dump-json",
-      "--no-playlist",
-      "--no-warnings",
-      url,
-    ]);
-    const data = JSON.parse(json);
+    const data = await runYtDlpMetadata(url);
 
     const formats = buildFormats(data.formats ?? [], data.duration ?? null);
 
@@ -974,23 +1111,13 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
 
-  // Attempt order: (1) base [+cookies], (2) each client fallback [+cookies]
-  const attemptPlans: string[][] = [[]];
-  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  // Attempt order: (1) default mode [+cookies], (2) each client fallback [+cookies]
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
 
-  const downloadFallbacks: string[][] = [
-    ["--extractor-args", "youtube:player_client=tv_embedded"],
-    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-    ["--extractor-args", "youtube:player_client=android_vr"],
-    ["--extractor-args", "youtube:player_client=mweb"],
-    ["--extractor-args", "youtube:player_client=android_vr,mweb"],
-    ["--extractor-args", "youtube:player_client=ios"],
-    ["--extractor-args", "youtube:player_client=web_embedded"],
-    ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-    ["--extractor-args", "youtube:player_client=android"],
-    ["--extractor-args", "youtube:player_client=ios,web_embedded"],
-    ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
-  ];
+  const downloadFallbacks: string[][] = getYouTubeFallbacks();
 
   const attempted = new Set<string>();
   let lastErr: Error | null = null;
@@ -1062,9 +1189,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   const stats = statSync(finalPath);
   jobRef.filesize = stats.size;
   jobRef.filePath = finalPath;
-  if (!jobRef.filename) {
-    jobRef.filename = finalPath.split("/").pop() ?? `video.${jobRef.ext}`;
-  }
+  jobRef.filename = finalPath.split("/").pop() ?? jobRef.filename ?? `video.${jobRef.ext}`;
   jobRef.status = "done";
   jobRef.percent = 100;
   jobRef.speed = null;
@@ -2518,16 +2643,19 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
     url,
   ];
 
-  const fastClipFormats = [
-    "best[ext=mp4][height<=720]",
-    "best[ext=mp4][height<=1080]",
-    "best[height<=720]",
-    "best[height<=1080]",
-  ];
   const heavyClipFormats = [
     "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]",
     "bestvideo[vcodec^=avc1][height<=1080]+bestaudio",
     "bestvideo[height<=1080]+bestaudio",
+    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
+    "bestvideo[vcodec^=avc1]+bestaudio",
+    "bestvideo+bestaudio",
+  ];
+  const fastClipFormats = [
+    "best[ext=mp4][height<=1080]",
+    "best[height<=1080]",
+    "best[ext=mp4][height<=720]",
+    "best[height<=720]",
   ];
 
   const runClipAttempt = (formatSelector: string, heavy: boolean): Promise<void> =>
@@ -2583,23 +2711,23 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
   const clipAttempt = async (): Promise<void> => {
     let lastErr: Error | null = null;
 
-    for (const formatSelector of fastClipFormats) {
-      try {
-        jobRef.message = "Downloading clip...";
-        await runClipAttempt(formatSelector, false);
-        return;
-      } catch (err) {
-        lastErr = err instanceof Error ? err : new Error("Fast clip download failed");
-      }
-    }
-
     for (const formatSelector of heavyClipFormats) {
       try {
-        jobRef.message = "Downloading and cutting clip...";
+        jobRef.message = "Downloading HD clip...";
         await runClipAttempt(formatSelector, true);
         return;
       } catch (err) {
-        lastErr = err instanceof Error ? err : new Error("Merged clip download failed");
+        lastErr = err instanceof Error ? err : new Error("HD clip download failed");
+      }
+    }
+
+    for (const formatSelector of fastClipFormats) {
+      try {
+        jobRef.message = "Falling back to standard clip quality...";
+        await runClipAttempt(formatSelector, false);
+        return;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error("Standard clip download failed");
       }
     }
 

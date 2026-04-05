@@ -197,6 +197,126 @@ CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
 - Consistent with other images in the same video project
 No subtitles, logos, watermarks, UI elements`;
 
+const FALLBACK_PALETTES = [
+  { bg: "#1b1230", panel: "#6d28d9", line: "#f59e0b" },
+  { bg: "#101827", panel: "#0f766e", line: "#f97316" },
+  { bg: "#21130f", panel: "#b45309", line: "#facc15" },
+  { bg: "#0f172a", panel: "#2563eb", line: "#ec4899" },
+  { bg: "#1f1b0d", panel: "#65a30d", line: "#f97316" },
+] as const;
+
+function hashText(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function buildFallbackSceneTitle(segment: TimelineSegment): string {
+  const base =
+    segment.description?.trim() ||
+    segment.imagePrompt?.trim() ||
+    (segment.isBhajan ? "Devotional Bhajan" : "Bhagwat Katha");
+  const cleaned = base
+    .replace(/\s+/g, " ")
+    .replace(/[“”"']/g, "")
+    .trim();
+  return cleaned.slice(0, 56) || (segment.isBhajan ? "Devotional Bhajan" : "Bhagwat Scene");
+}
+
+function wrapText(text: string, maxChars = 36, maxLines = 3): string {
+  const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  if (words.length === 0) return "";
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxChars || current.length === 0) {
+      current = next;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+    if (lines.length >= maxLines - 1) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  let joined = lines.join("\n");
+  if (joined.length < text.length) joined += "…";
+  return joined;
+}
+
+function inferFallbackSubtitle(segment: TimelineSegment): string {
+  const mood = segment.isBhajan ? "Bhajan visual" : "Katha visual";
+  const promptHint = segment.imagePrompt
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return wrapText(promptHint || mood, 44, 3);
+}
+
+function sanitizeTextForDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/%/g, "\\%")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+async function createFallbackSceneCard(
+  segment: TimelineSegment,
+  outputPath: string,
+  variantSeed: string,
+): Promise<void> {
+  const palette = FALLBACK_PALETTES[hashText(variantSeed) % FALLBACK_PALETTES.length];
+  const title = sanitizeTextForDrawtext(buildFallbackSceneTitle(segment));
+  const subtitle = sanitizeTextForDrawtext(inferFallbackSubtitle(segment));
+  const badge = sanitizeTextForDrawtext(segment.isBhajan ? "BHAJAN" : "KATHA");
+  const titleFont = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+  const bodyFont = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+
+  await new Promise<void>((resolve, reject) => {
+    const ff = spawn("ffmpeg", [
+      "-f",
+      "lavfi",
+      "-i",
+      `color=c=${palette.bg}:s=1920x1080`,
+      "-frames:v",
+      "1",
+      "-vf",
+      [
+        `drawbox=x=0:y=0:w=iw:h=ih:color=${palette.bg}:t=fill`,
+        `drawbox=x=70:y=70:w=iw-140:h=ih-140:color=${palette.panel}@0.14:t=fill`,
+        `drawbox=x=70:y=70:w=iw-140:h=6:color=${palette.line}@0.92:t=fill`,
+        `drawbox=x=70:y=ih-210:w=iw-140:h=140:color=black@0.28:t=fill`,
+        `drawbox=x=120:y=130:w=260:h=70:color=black@0.22:t=fill`,
+        `drawtext=fontfile=${titleFont}:text='${badge}':fontcolor=white@0.88:fontsize=34:x=150:y=150`,
+        `drawtext=fontfile=${titleFont}:text='${title}':fontcolor=white:fontsize=82:x=(w-text_w)/2:y=360:borderw=2:bordercolor=black@0.28:line_spacing=10`,
+        `drawtext=fontfile=${bodyFont}:text='${subtitle}':fontcolor=white@0.84:fontsize=34:x=(w-text_w)/2:y=620:borderw=1:bordercolor=black@0.18:line_spacing=12`,
+      ].join(","),
+      "-y",
+      outputPath,
+    ]);
+    let stderr = "";
+    ff.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    ff.on("close", (code) => {
+      if (code === 0 && existsSync(outputPath)) resolve();
+      else reject(new Error(`Fallback visual generation failed (${code}): ${stderr.slice(-260)}`));
+    });
+    ff.on("error", reject);
+  });
+}
+
+function shouldDisableRemoteImageGeneration(errMsg: string): boolean {
+  return /resource_exhausted|quota exceeded|limit:\s*0|not available|rate.?limit|preview-image|no image data/i.test(
+    errMsg,
+  );
+}
+
 function extractImageBytes(response: any): Buffer {
   const candidate = response.candidates?.[0];
   if (!candidate) throw new Error("Gemini returned no candidate");
@@ -316,6 +436,103 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
 
 // ── Gemini text generation ─────────────────────────────────────────────────────
 // Replit integration: gemini-3.1-pro-preview  →  own key fallback: gemini-2.5-pro
+const OWN_KEY_TEXT_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+] as const;
+const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
+  process.env.BHAGWAT_REVIEW_TIMEOUT_MS ?? 90_000,
+);
+
+function shouldRetryWithLighterGeminiModel(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit/i.test(msg);
+}
+
+async function ownKeyGeminiContent(
+  systemInstruction: string,
+  userContent: string,
+  label: string,
+): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured â€” add it in Secrets");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  let lastErr: unknown;
+
+  for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
+    const modelName = OWN_KEY_TEXT_MODELS[i];
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        ...(systemInstruction && { systemInstruction }),
+      });
+      const result = await model.generateContent(userContent);
+      return result.response.text();
+    } catch (err) {
+      lastErr = err;
+      const canRetry =
+        i < OWN_KEY_TEXT_MODELS.length - 1 &&
+        shouldRetryWithLighterGeminiModel(err);
+      console.warn(
+        canRetry
+          ? `[bhagwat/text] ${label} (${modelName}) failed, retrying with lighter Gemini model:`
+          : `[bhagwat/text] ${label} (${modelName}) failed:`,
+        err instanceof Error ? err.message : String(err ?? ""),
+      );
+      if (!canRetry) throw err;
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
+}
+
+async function ownKeyGeminiStream(
+  systemInstruction: string,
+  userContent: string,
+  onChunk: (text: string) => void,
+  label: string,
+): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured â€” add it in Secrets");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  let lastErr: unknown;
+
+  for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
+    const modelName = OWN_KEY_TEXT_MODELS[i];
+    let fullText = "";
+
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        ...(systemInstruction && { systemInstruction }),
+      });
+      const result = await model.generateContentStream(userContent);
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) {
+          fullText += text;
+          onChunk(text);
+        }
+      }
+      return fullText;
+    } catch (err) {
+      lastErr = err;
+      const canRetry =
+        fullText.length === 0 &&
+        i < OWN_KEY_TEXT_MODELS.length - 1 &&
+        shouldRetryWithLighterGeminiModel(err);
+      console.warn(
+        canRetry
+          ? `[bhagwat/text] ${label} stream (${modelName}) failed before output, retrying with lighter Gemini model:`
+          : `[bhagwat/text] ${label} stream (${modelName}) failed:`,
+        err instanceof Error ? err.message : String(err ?? ""),
+      );
+      if (!canRetry) throw err;
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
+}
+
 async function geminiProContent(
   systemInstruction: string,
   userContent: string,
@@ -337,14 +554,7 @@ async function geminiProContent(
     }
   }
 
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-pro",
-    ...(systemInstruction && { systemInstruction }),
-  });
-  const result = await model.generateContent(userContent);
-  return result.response.text();
+  return ownKeyGeminiContent(systemInstruction, userContent, "Own-key Bhagwat text generation");
 }
 
 async function geminiProStream(
@@ -375,18 +585,12 @@ async function geminiProStream(
     }
   }
 
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-pro",
-    ...(systemInstruction && { systemInstruction }),
-  });
-  const result = await model.generateContentStream(userContent);
-  for await (const chunk of result.stream) {
-    const text = chunk.text();
-    if (text) { fullText += text; onChunk(text); }
-  }
-  return fullText;
+  return ownKeyGeminiStream(
+    systemInstruction,
+    userContent,
+    onChunk,
+    "Own-key Bhagwat text generation",
+  );
 }
 
 // Generate images for all segments — 1 per segment
@@ -427,6 +631,7 @@ async function generateAllSegmentImages(
   const imagePaths: string[][] = segments.map(() => []);
   let done = 0;
   const total = tasks.length;
+  let remoteImageGenerationDisabled = false;
 
   // Process with concurrency = 4
   const CONCURRENCY = 4;
@@ -434,6 +639,17 @@ async function generateAllSegmentImages(
     const batch = tasks.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (task) => {
+        if (remoteImageGenerationDisabled) {
+          await createFallbackSceneCard(
+            segments[task.segIdx],
+            task.path,
+            `${task.segIdx}:${task.imgIdx}:${task.prompt}`,
+          );
+          imagePaths[task.segIdx].push(task.path);
+          done++;
+          onProgress(done, total, `${segments[task.segIdx].description} (fallback visual)`);
+          return;
+        }
         try {
           await generateImage(task.prompt, task.path);
           imagePaths[task.segIdx].push(task.path);
@@ -445,9 +661,18 @@ async function generateAllSegmentImages(
           );
           // If the primary attempt timed out, skip fallback to avoid multi-minute hangs.
           if (/timed out/i.test(errMsg)) {
+            await createFallbackSceneCard(
+              segments[task.segIdx],
+              task.path,
+              `${task.segIdx}:${task.imgIdx}:${task.prompt}:timeout`,
+            );
+            imagePaths[task.segIdx].push(task.path);
             done++;
-            onProgress(done, total, `${segments[task.segIdx].description} (image timeout, skipped)`);
+            onProgress(done, total, `${segments[task.segIdx].description} (fallback visual)`);
             return;
+          }
+          if (shouldDisableRemoteImageGeneration(errMsg)) {
+            remoteImageGenerationDisabled = true;
           }
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. MUST be photorealistic — no abstract, digital, animated, or illustrated styles`;
@@ -460,7 +685,15 @@ async function generateAllSegmentImages(
               `[bhagwat/render] Fallback image gen also failed (seg ${task.segIdx}/${task.imgIdx}):`,
               errMsg2,
             );
-            // Skip this image slot — will use neighbor's image
+            if (shouldDisableRemoteImageGeneration(errMsg2)) {
+              remoteImageGenerationDisabled = true;
+            }
+            await createFallbackSceneCard(
+              segments[task.segIdx],
+              task.path,
+              `${task.segIdx}:${task.imgIdx}:${task.prompt}:fallback`,
+            );
+            imagePaths[task.segIdx].push(task.path);
           }
         }
         done++;
@@ -491,8 +724,11 @@ async function generateAllSegmentImages(
 
 // ── yt-dlp configuration (mirrors youtube.ts, kept in sync) ──────────────────
 const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
+const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
 const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
 const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
+const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
+const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_FILE =
   process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
 
@@ -531,15 +767,49 @@ const YTDLP_BASE_ARGS: string[] = [
 
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
 
-if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+if (HAS_DYNAMIC_POT_PROVIDER) {
   YTDLP_BASE_ARGS.push(
     "--extractor-args",
-    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    `youtubepot-bgutilhttp:base_url=${YTDLP_POT_PROVIDER_URL}`,
   );
-} else {
-  // tv_embedded is the most reliable client on AWS/datacenter IPs in 2025/2026.
-  // android_vr is a strong secondary. Exclude dead android_sdkless.
-  YTDLP_BASE_ARGS.push("--extractor-args", "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless");
+}
+
+function getDefaultBhagwatYoutubeExtractorArgs(): string[] {
+  if (HAS_DYNAMIC_POT_PROVIDER) {
+    return [
+      "--extractor-args",
+      "youtube:player_client=web,web_embedded,mweb",
+    ];
+  }
+  if (HAS_STATIC_PO_TOKEN) {
+    return [
+      "--extractor-args",
+      `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    ];
+  }
+  return [
+    "--extractor-args",
+    "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
+  ];
+}
+
+function getBhagwatYoutubeFallbacks(): string[][] {
+  if (HAS_DYNAMIC_POT_PROVIDER || HAS_STATIC_PO_TOKEN) {
+    return [
+      ["--extractor-args", "youtube:player_client=web,web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=mweb,ios"],
+      ["--extractor-args", "youtube:player_client=ios"],
+      ["--extractor-args", "youtube:player_client=android_vr"],
+    ];
+  }
+  return [
+    ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+    ["--extractor-args", "youtube:player_client=tv_embedded"],
+    ["--extractor-args", "youtube:player_client=android_vr"],
+    ["--extractor-args", "youtube:player_client=mweb"],
+    ["--extractor-args", "youtube:player_client=ios"],
+  ];
 }
 
 // Subtitle args (lighter — no fragment retries needed).
@@ -560,13 +830,11 @@ const YTDLP_SUBS_ARGS: string[] = [
 ];
 
 if (YTDLP_PROXY) YTDLP_SUBS_ARGS.push("--proxy", YTDLP_PROXY);
-if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
+if (HAS_DYNAMIC_POT_PROVIDER) {
   YTDLP_SUBS_ARGS.push(
     "--extractor-args",
-    `youtube:player_client=web,web_embedded;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
+    `youtubepot-bgutilhttp:base_url=${YTDLP_POT_PROVIDER_URL}`,
   );
-} else {
-  YTDLP_SUBS_ARGS.push("--extractor-args", "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless");
 }
 
 // YouTube block detection — broad pattern to catch all YouTube error variants in 2025/2026.
@@ -576,19 +844,7 @@ function isBhagwatYtBlocked(msg: string): boolean {
 
 // Fallback player clients ordered by reliability on AWS/datacenter IPs.
 // tv_embedded (YouTube TV embedded player) is the least bot-checked on server IPs.
-const YTDLP_CLOUD_FALLBACKS: string[][] = [
-  ["--extractor-args", "youtube:player_client=tv_embedded"],
-  ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-  ["--extractor-args", "youtube:player_client=android_vr"],
-  ["--extractor-args", "youtube:player_client=mweb"],
-  ["--extractor-args", "youtube:player_client=android_vr,mweb"],
-  ["--extractor-args", "youtube:player_client=ios"],
-  ["--extractor-args", "youtube:player_client=web_embedded"],
-  ["--extractor-args", "youtube:player_client=android_vr,web_embedded"],
-  ["--extractor-args", "youtube:player_client=android"],
-  ["--extractor-args", "youtube:player_client=ios,web_embedded"],
-  ["--extractor-args", "youtube:player_client=tv_embedded,mweb,android_vr"],
-];
+const YTDLP_CLOUD_FALLBACKS: string[][] = getBhagwatYoutubeFallbacks();
 
 // ── yt-dlp helpers ────────────────────────────────────────────────────────────
 function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[]): Promise<string> {
@@ -606,8 +862,10 @@ function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[
 async function runYtDlp(args: string[]): Promise<string> {
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   const cookieArgs = getBhagwatCookieArgs();
-  const attemptPlans: string[][] = [[]];
-  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+  const defaultYoutubeArgs = maybeUrl ? getDefaultBhagwatYoutubeExtractorArgs() : [];
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
@@ -641,8 +899,10 @@ async function runYtDlp(args: string[]): Promise<string> {
 
 async function runYtDlpForSubs(args: string[]): Promise<string> {
   const cookieArgs = getBhagwatCookieArgs();
-  const attemptPlans: string[][] = [[]];
-  if (cookieArgs.length) attemptPlans.push(cookieArgs);
+  const defaultYoutubeArgs = getDefaultBhagwatYoutubeExtractorArgs();
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
@@ -659,11 +919,14 @@ async function runYtDlpForSubs(args: string[]): Promise<string> {
   }
 
   for (const fallback of YTDLP_CLOUD_FALLBACKS.slice(0, 3)) {
-    const key = fallback.join("\x01");
-    if (attempted.has(key)) continue;
-    attempted.add(key);
-    try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, fallback, args); }
-    catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp subs fallback failed"); }
+    const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
+    for (const extra of plans) {
+      const key = extra.join("\x01");
+      if (attempted.has(key)) continue;
+      attempted.add(key);
+      try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args); }
+      catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp subs fallback failed"); }
+    }
   }
 
   throw lastErr ?? new Error("yt-dlp subs failed");
@@ -938,6 +1201,45 @@ interface ReviewJob {
 }
 const reviewJobs = new Map<string, ReviewJob>();
 
+function extractBhagwatReviewSuggestions(fullText: string): {
+  improvements: any[];
+  newSegments: any[];
+} {
+  const blockMatch = fullText.match(
+    /\*{0,2}\s*SUGGESTIONS_JSON\s*\*{0,2}\s*([\s\S]*?)\s*\*{0,2}\s*END_SUGGESTIONS\s*\*{0,2}/i,
+  );
+  if (!blockMatch) {
+    return { improvements: [], newSegments: [] };
+  }
+
+  let jsonText = blockMatch[1].trim();
+  jsonText = jsonText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+
+  const firstBrace = jsonText.indexOf("{");
+  const lastBrace = jsonText.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    jsonText = jsonText.slice(firstBrace, lastBrace + 1);
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText);
+    const improvements = Array.isArray(parsed.improvements)
+      ? parsed.improvements
+      : [];
+    const newSegments = Array.isArray(parsed.newSegments)
+      ? parsed.newSegments.filter(
+          (s: any) =>
+            typeof s.startSec === "number" &&
+            typeof s.endSec === "number" &&
+            s.endSec > s.startSec + 1,
+        )
+      : [];
+    return { improvements, newSegments };
+  } catch {
+    return { improvements: [], newSegments: [] };
+  }
+}
+
 setInterval(
   () => {
     const cutoff = Date.now() - 60 * 60 * 1000;
@@ -1065,29 +1367,14 @@ END_SUGGESTIONS
 
 Both arrays can be empty if there's nothing to improve or add. Only suggest new segments for genuinely uncovered moments, not for sections already covered by the plan.`;
 
-    let fullText = "";
-    fullText = await geminiProStream("", prompt, (text) => emit("chunk", { text }));
-
-    // Parse structured suggestions from the marker block
-    let improvements: any[] = [];
-    let newSegments: any[] = [];
-    const match = fullText.match(
-      /SUGGESTIONS_JSON\s*([\s\S]*?)\s*END_SUGGESTIONS/,
+    const fullText = await withTimeout(
+      geminiProStream("", prompt, (text) => emit("chunk", { text })),
+      BHAGWAT_REVIEW_TIMEOUT_MS,
+      "Bhagwat review generation",
     );
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        if (parsed.improvements && Array.isArray(parsed.improvements))
-          improvements = parsed.improvements;
-        if (parsed.newSegments && Array.isArray(parsed.newSegments))
-          newSegments = parsed.newSegments.filter(
-            (s: any) =>
-              typeof s.startSec === "number" &&
-              typeof s.endSec === "number" &&
-              s.endSec > s.startSec + 1,
-          );
-      } catch {}
-    }
+
+    const { improvements, newSegments } =
+      extractBhagwatReviewSuggestions(fullText);
 
     emit("suggestions", { suggestions: improvements, newSegments });
     job.status = "done";
@@ -1106,6 +1393,8 @@ interface RenderJob {
   outputPath?: string;
   filename?: string;
   error?: string;
+  progressPercent?: number;
+  progressMessage?: string;
   createdAt: number;
   deleteScheduled?: boolean;
   cancelled?: boolean;
@@ -1188,6 +1477,50 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     job.emitter.off("progress", onProg);
     job.emitter.off("done", onRenDone);
     job.emitter.off("jobError", onRenErr);
+  });
+});
+
+router.get("/bhagwat/render-state/:jobId", (req: Request, res: Response) => {
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = renderJobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (job.status === "done") {
+    res.json({
+      status: "done",
+      percent: job.progressPercent ?? 100,
+      message: job.progressMessage ?? "Video ready for download!",
+      downloadUrl: `/api/bhagwat/download/${jobId}`,
+      filename: job.filename,
+    });
+    return;
+  }
+  if (job.status === "error") {
+    res.json({
+      status: "error",
+      percent: job.progressPercent ?? 0,
+      message: job.error ?? "Render failed",
+    });
+    return;
+  }
+  if (job.status === "expired") {
+    res.json({
+      status: "expired",
+      percent: job.progressPercent ?? 100,
+      message: "Rendered file expired",
+    });
+    return;
+  }
+  res.json({
+    status: job.status,
+    percent: job.progressPercent ?? 0,
+    message: job.progressMessage ?? "",
   });
 });
 
@@ -2322,9 +2655,9 @@ async function runBhagwatRender(
       rmdirSync(imgDir);
     } catch {}
 
-    emit("progress", { percent: 100, message: "Video ready for download!" });
     job.status = "done";
     job.outputPath = outputPath;
+    emit("progress", { percent: 100, message: "Video ready for download!" });
     emit("done", {
       downloadUrl: `/api/bhagwat/download/${jobId}`,
       filename: job.filename,
@@ -2802,3 +3135,6 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
 });
 
 export default router;
+
+
+

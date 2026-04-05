@@ -25,8 +25,10 @@ RUN curl -fsSL https://deno.land/install.sh | sh \
 # ── pnpm ─────────────────────────────────────────────────────────────────────
 RUN npm install -g pnpm@10
 
-# ── yt-dlp (always install latest — YouTube bot detection bypasses update frequently) ─────
-RUN pip3 install --break-system-packages --upgrade yt-dlp
+# ── yt-dlp + dynamic PO-token provider plugin ────────────────────────────────
+RUN pip3 install --break-system-packages --upgrade \
+      "yt-dlp[default,curl-cffi]" \
+      bgutil-ytdlp-pot-provider
 
 # ── App source ────────────────────────────────────────────────────────────────
 WORKDIR /app

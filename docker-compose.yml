@@ -18,16 +18,26 @@ services:
       # OPTION 2: Route yt-dlp through a residential/non-datacenter proxy
       # e.g. YTDLP_PROXY=socks5://user:pass@host:port
       YTDLP_PROXY: ${YTDLP_PROXY:-}
-      # OPTION 3: YouTube po_token + visitor_data (generate with youtube-trusted-session-generator)
-      # See: https://github.com/iv-org/youtube-trusted-session-generator
+      # OPTION 3: Static YouTube po_token + visitor_data (last resort; usually video-bound)
       YTDLP_PO_TOKEN: ${YTDLP_PO_TOKEN:-}
       YTDLP_VISITOR_DATA: ${YTDLP_VISITOR_DATA:-}
+      # OPTION 4 (recommended on AWS): bgutil dynamic PO-token provider sidecar
+      YTDLP_POT_PROVIDER_URL: ${YTDLP_POT_PROVIDER_URL:-http://bgutil-provider:4416}
     depends_on:
       db:
         condition: service_healthy
+      bgutil-provider:
+        condition: service_started
     restart: unless-stopped
     # Allow large uploads and long-running downloads
     stop_grace_period: 2m
+
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    init: true
+    expose:
+      - "4416"
+    restart: unless-stopped
 
   db:
     image: postgres:16-alpine
