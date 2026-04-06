@@ -35,8 +35,15 @@ interface HistoryEntry {
 
 const HISTORY_KEY = "bhagwat_render_history";
 const SESSION_KEY = "bhagwat_active_session";
+const PENDING_RENDERS_KEY = "bhagwat_pending_renders";
 const MAX_HISTORY = 20;
 const STORAGE_KEY = "bhagwat_unlocked";
+
+interface PendingRender {
+  jobId: string;
+  videoTitle: string;
+  startedAt: number;
+}
 
 function formatSec(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
@@ -380,9 +387,29 @@ function HistoryDownloadRow({ entry }: { entry: HistoryEntry }) {
 }
 
 // ── Render History ─────────────────────────────────────────────────────────────
-function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear: () => void }) {
+function RenderHistory({
+  history,
+  onClear,
+  pendingRenders,
+  currentRenderJobId,
+}: {
+  history: HistoryEntry[];
+  onClear: () => void;
+  pendingRenders: PendingRender[];
+  currentRenderJobId: string | null;
+}) {
   const [open, setOpen] = useState(false);
-  if (history.length === 0) return null;
+
+  // Background renders — exclude the one currently shown in main UI
+  const backgroundPending = pendingRenders.filter(r => r.jobId !== currentRenderJobId);
+  const total = history.length + backgroundPending.length;
+
+  // Auto-open when background renders surface (user came back to check)
+  useEffect(() => {
+    if (backgroundPending.length > 0) setOpen(true);
+  }, [backgroundPending.length]);
+
+  if (total === 0) return null;
 
   return (
     <div className="glass-panel rounded-2xl overflow-hidden">
@@ -392,7 +419,13 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
       >
         <span className="flex items-center gap-2 text-sm text-white/55 font-medium">
           <Clock className="w-4 h-4 text-white/25" />
-          Recent renders ({history.length})
+          Recent renders ({total})
+          {backgroundPending.length > 0 && (
+            <span className="flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/25 px-1.5 py-0.5 rounded-full">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              {backgroundPending.length} in&nbsp;progress
+            </span>
+          )}
         </span>
         {open ? <ChevronUp className="w-4 h-4 text-white/25" /> : <ChevronDown className="w-4 h-4 text-white/25" />}
       </button>
@@ -405,9 +438,23 @@ function RenderHistory({ history, onClear }: { history: HistoryEntry[]; onClear:
           >
             <div className="px-3 pb-3 space-y-1.5 border-t border-white/8 pt-2.5">
               <p className="text-[10px] text-white/20 pt-1 pb-0.5">Downloads expire when the server restarts. Re-render if a link no longer works.</p>
+
+              {/* Background renders in progress */}
+              {backgroundPending.map(r => (
+                <div key={r.jobId} className="flex items-center gap-2 rounded-lg bg-amber-500/5 border border-amber-500/20 px-2.5 py-2">
+                  <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-white/70 truncate">{r.videoTitle || "Rendering…"}</p>
+                    <p className="text-xs text-white/30">Started {timeAgo(r.startedAt)} · Running in background</p>
+                  </div>
+                </div>
+              ))}
+
+              {/* Completed entries */}
               {history.map(entry => (
                 <HistoryDownloadRow key={entry.id} entry={entry} />
               ))}
+
               <button
                 onClick={onClear}
                 className="w-full text-xs text-white/20 hover:text-white/40 py-1 transition-colors"
@@ -567,6 +614,88 @@ function BhagwatEditor({
     localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
   }, []);
 
+  // ── Pending (background) renders ───────────────────────────────────────────
+  const [pendingRenders, setPendingRenders] = useState<PendingRender[]>(() => {
+    try { return JSON.parse(localStorage.getItem(PENDING_RENDERS_KEY) ?? "[]"); } catch { return []; }
+  });
+
+  const savePendingRenders = useCallback((renders: PendingRender[]) => {
+    setPendingRenders(renders);
+    localStorage.setItem(PENDING_RENDERS_KEY, JSON.stringify(renders));
+  }, []);
+
+  const addPendingRender = useCallback((jobId: string, title: string) => {
+    setPendingRenders(prev => {
+      const updated = [{ jobId, videoTitle: title, startedAt: Date.now() }, ...prev.filter(r => r.jobId !== jobId)].slice(0, 10);
+      localStorage.setItem(PENDING_RENDERS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const removePendingRender = useCallback((jobId: string) => {
+    setPendingRenders(prev => {
+      const updated = prev.filter(r => r.jobId !== jobId);
+      localStorage.setItem(PENDING_RENDERS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  // On mount and periodically: check background renders for completion
+  const checkPendingRenders = useCallback(async () => {
+    const stored: PendingRender[] = (() => {
+      try { return JSON.parse(localStorage.getItem(PENDING_RENDERS_KEY) ?? "[]"); } catch { return []; }
+    })();
+    if (stored.length === 0) return;
+
+    const toKeep: PendingRender[] = [];
+    for (const r of stored) {
+      // Stale guard: if older than 4 hours, server has definitely cleaned it up
+      if (Date.now() - r.startedAt > 4 * 60 * 60 * 1000) continue;
+      try {
+        const res = await fetch(`${BASE}/api/bhagwat/render-state/${r.jobId}`, { cache: "no-store" });
+        if (!res.ok) { toKeep.push(r); continue; }
+        const payload = await res.json();
+        if (payload.status === "done" && payload.downloadUrl) {
+          const absoluteUrl = payload.downloadUrl.startsWith("http")
+            ? payload.downloadUrl : `${BASE}${payload.downloadUrl}`;
+          const filename = payload.filename ?? "bhagwat_video.mp4";
+          setHistory(prev => {
+            const entry: HistoryEntry = {
+              id: r.jobId,
+              title: r.videoTitle || filename,
+              filename,
+              downloadUrl: absoluteUrl,
+              timestamp: r.startedAt,
+            };
+            const deduped = prev.filter(e => e.id !== r.jobId && e.downloadUrl !== absoluteUrl);
+            const updated = [entry, ...deduped].slice(0, MAX_HISTORY);
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+            return updated;
+          });
+          // Resolved — do NOT push to toKeep
+        } else if (payload.status === "error" || payload.status === "expired") {
+          // Failed — silently dismiss
+        } else {
+          toKeep.push(r); // Still running
+        }
+      } catch {
+        toKeep.push(r); // Network error — keep for next check
+      }
+    }
+    savePendingRenders(toKeep);
+  }, [BASE, savePendingRenders]);
+
+  // Mount: resolve any pending renders from previous sessions
+  useEffect(() => { void checkPendingRenders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll every 30s while there are background renders not yet shown in main UI
+  useEffect(() => {
+    const backgroundPending = pendingRenders.filter(r => r.jobId !== renderJobId);
+    if (backgroundPending.length === 0) return;
+    const timer = setInterval(() => void checkPendingRenders(), 30_000);
+    return () => clearInterval(timer);
+  }, [pendingRenders, renderJobId, checkPendingRenders]);
+
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
 
@@ -630,6 +759,7 @@ function BhagwatEditor({
         const filename = payload.filename ?? "bhagwat_video.mp4";
         setDownloadUrl(absoluteDownloadUrl);
         setDownloadFilename(filename);
+        removePendingRender(jobId);
         persistDoneState(absoluteDownloadUrl, filename, nextVideoTitle);
         setSseReconnecting(false);
         setPhase("done");
@@ -637,6 +767,7 @@ function BhagwatEditor({
       }
 
       if (payload.status === "error" || payload.status === "expired") {
+        removePendingRender(jobId);
         setSseReconnecting(false);
         setErrorMsg(payload.message ?? (payload.status === "expired" ? "Rendered file expired" : "Render failed"));
         setPhase("error");
@@ -647,7 +778,7 @@ function BhagwatEditor({
     }
 
     return false;
-  }, [persistDoneState]);
+  }, [persistDoneState, removePendingRender]);
 
   useEffect(() => {
     let cancelled = false;
@@ -870,12 +1001,14 @@ function BhagwatEditor({
           const filename = d.filename ?? "bhagwat_video.mp4";
           setDownloadUrl(absoluteDownloadUrl); setDownloadFilename(filename);
           setDownloadAlive(true); // file was just created — no HEAD probe needed
+          removePendingRender(session.renderJobId);
           persistDoneState(absoluteDownloadUrl, filename, session.videoTitle ?? "");
           setPhase("done"); es.close();
         });
         es.addEventListener("jobError", e => {
           setSseReconnecting(false);
           const d = JSON.parse((e as MessageEvent).data);
+          removePendingRender(session.renderJobId);
           setErrorMsg(d.message ?? "Render failed"); setPhase("error"); es.close();
         });
         es.onerror = async () => {
@@ -1142,7 +1275,10 @@ function BhagwatEditor({
     esRef.current = null;
     // Fire-and-forget cancel requests to kill FFmpeg/yt-dlp on the server
     if (analyzeJobId) fetch(`${BASE}/api/bhagwat/cancel-analyze/${analyzeJobId}`, { method: "POST" }).catch(() => {});
-    if (renderJobId)  fetch(`${BASE}/api/bhagwat/cancel-render/${renderJobId}`,   { method: "POST" }).catch(() => {});
+    if (renderJobId) {
+      fetch(`${BASE}/api/bhagwat/cancel-render/${renderJobId}`, { method: "POST" }).catch(() => {});
+      removePendingRender(renderJobId); // Cancelled — remove from background tracking
+    }
     setPhase("idle");
     setReviewing(false);
     setSseReconnecting(false);
@@ -1182,6 +1318,8 @@ function BhagwatEditor({
       }
       const { jobId } = await renderRes.json();
       setRenderJobId(jobId);
+      // Track this job so it appears in history if the tab is closed before render completes
+      addPendingRender(jobId, videoTitle);
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
       esRef.current = es;
 
@@ -1199,6 +1337,7 @@ function BhagwatEditor({
         setDownloadUrl(absoluteDownloadUrl);
         setDownloadFilename(filename);
         setDownloadAlive(true);
+        removePendingRender(jobId);
         persistDoneState(absoluteDownloadUrl, filename);
         setPhase("done");
         es.close();
@@ -1206,6 +1345,7 @@ function BhagwatEditor({
       es.addEventListener("jobError", e => {
         setSseReconnecting(false);
         const d = JSON.parse((e as MessageEvent).data);
+        removePendingRender(jobId);
         setErrorMsg(d.message ?? "Render failed");
         setPhase("error");
         es.close();
@@ -1285,8 +1425,11 @@ function BhagwatEditor({
       {/* Render History */}
       <RenderHistory
         history={history}
+        pendingRenders={pendingRenders}
+        currentRenderJobId={renderJobId}
         onClear={() => {
           saveHistory([]);
+          savePendingRenders([]);
           fetch(`${BASE}/api/bhagwat/render-history`, { method: "DELETE" }).catch(() => {});
         }}
       />
