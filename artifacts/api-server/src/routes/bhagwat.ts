@@ -1392,6 +1392,7 @@ interface RenderJob {
   status: "pending" | "running" | "done" | "error" | "expired";
   outputPath?: string;
   filename?: string;
+  title?: string;
   error?: string;
   progressPercent?: number;
   progressMessage?: string;
@@ -1402,8 +1403,108 @@ interface RenderJob {
 }
 const renderJobs = new Map<string, RenderJob>();
 
+interface PersistedRenderMeta {
+  jobId: string;
+  filename: string;
+  title?: string;
+  completedAt: number;
+}
+
+const renderMetaPath = (jobId: string) => join(BHAGWAT_RENDERED_DIR, `${jobId}.json`);
+const renderVideoPath = (jobId: string) => join(BHAGWAT_RENDERED_DIR, `${jobId}.mp4`);
+
+function readPersistedRenderMeta(jobId: string): PersistedRenderMeta | null {
+  const metaPath = renderMetaPath(jobId);
+  if (!existsSync(metaPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+    if (parsed && typeof parsed.filename === "string") {
+      return {
+        jobId,
+        filename: parsed.filename,
+        title: typeof parsed.title === "string" ? parsed.title : undefined,
+        completedAt: typeof parsed.completedAt === "number" ? parsed.completedAt : Date.now(),
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function persistRenderMeta(jobId: string, job: RenderJob) {
+  const meta: PersistedRenderMeta = {
+    jobId,
+    filename: job.filename ?? "bhagwat_video.mp4",
+    title: job.title,
+    completedAt: Date.now(),
+  };
+  try {
+    writeFileSync(renderMetaPath(jobId), JSON.stringify(meta));
+  } catch {}
+}
+
+function ensureRenderJob(jobId: string): RenderJob | undefined {
+  const existing = renderJobs.get(jobId);
+  if (existing) return existing;
+
+  const outputPath = renderVideoPath(jobId);
+  const meta = readPersistedRenderMeta(jobId);
+
+  if (existsSync(outputPath)) {
+    const hydrated: RenderJob = {
+      emitter: new EventEmitter(),
+      status: "done",
+      outputPath,
+      filename: meta?.filename ?? "bhagwat_video.mp4",
+      title: meta?.title,
+      progressPercent: 100,
+      progressMessage: "Video ready for download!",
+      createdAt: meta?.completedAt ?? Date.now(),
+    };
+    renderJobs.set(jobId, hydrated);
+    return hydrated;
+  }
+
+  if (meta) {
+    const hydrated: RenderJob = {
+      emitter: new EventEmitter(),
+      status: "expired",
+      filename: meta.filename,
+      title: meta.title,
+      progressPercent: 100,
+      progressMessage: "Rendered file expired",
+      createdAt: meta.completedAt,
+    };
+    renderJobs.set(jobId, hydrated);
+    return hydrated;
+  }
+
+  return undefined;
+}
+
+function readRenderHistory(limit = 8) {
+  const entries: Array<{ id: string; title: string; filename: string; downloadUrl: string; timestamp: number }> = [];
+  try {
+    for (const entry of readdirSync(BHAGWAT_RENDERED_DIR)) {
+      if (!entry.endsWith(".json")) continue;
+      const jobId = entry.replace(/\.json$/i, "");
+      const meta = readPersistedRenderMeta(jobId);
+      if (!meta) continue;
+      entries.push({
+        id: jobId,
+        title: meta.title ?? meta.filename,
+        filename: meta.filename,
+        downloadUrl: `/api/bhagwat/download/${jobId}`,
+        timestamp: meta.completedAt,
+      });
+    }
+  } catch {}
+  return entries
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, limit);
+}
+
 router.post("/bhagwat/render", async (req: Request, res: Response) => {
-  const { url, timeline, videoDuration, clipStartSec, clipEndSec, mode } =
+  const { url, timeline, videoDuration, clipStartSec, clipEndSec, mode, videoTitle } =
     req.body as {
       url: string;
       timeline: TimelineSegment[];
@@ -1411,6 +1512,7 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
       clipStartSec?: number;
       clipEndSec?: number;
       mode?: "full" | "smart";
+      videoTitle?: string;
     };
   if (!url || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "url and timeline are required" });
@@ -1421,6 +1523,7 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
+    title: videoTitle,
   };
   renderJobs.set(jobId, job);
   res.json({ jobId });
@@ -1443,7 +1546,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = renderJobs.get(jobId);
+  const job = ensureRenderJob(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1486,7 +1589,7 @@ router.get("/bhagwat/render-state/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = renderJobs.get(jobId);
+  const job = ensureRenderJob(jobId);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
@@ -1524,13 +1627,17 @@ router.get("/bhagwat/render-state/:jobId", (req: Request, res: Response) => {
   });
 });
 
+router.get("/bhagwat/render-history", (_req: Request, res: Response) => {
+  res.json({ entries: readRenderHistory() });
+});
+
 router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ ok: false });
     return;
   }
-  const job = renderJobs.get(jobId);
+  const job = ensureRenderJob(jobId);
   if (!job) { res.status(404).json({ ok: false }); return; }
   job.cancelled = true;
   job.abort?.();
@@ -1561,6 +1668,9 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
       } catch {}
       job.outputPath = undefined;
       job.status = "expired";
+      try {
+        unlinkSync(renderMetaPath(jobId));
+      } catch {}
       setTimeout(() => renderJobs.delete(jobId), 60_000);
     }, RENDER_DELETE_MS);
   }
@@ -2666,6 +2776,7 @@ async function runBhagwatRender(
 
     job.status = "done";
     job.outputPath = outputPath;
+    persistRenderMeta(jobId, job);
     emit("progress", { percent: 100, message: "Video ready for download!" });
     emit("done", {
       downloadUrl: `/api/bhagwat/download/${jobId}`,
@@ -3127,6 +3238,7 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
+    title: audio.originalName.replace(/\.[^.]+$/, ""),
   };
   renderJobs.set(jobId, job);
   res.json({ jobId });

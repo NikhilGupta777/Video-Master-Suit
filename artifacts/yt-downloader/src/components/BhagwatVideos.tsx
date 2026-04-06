@@ -575,16 +575,6 @@ function BhagwatEditor({
   // Cleanup: close any open EventSource when the component unmounts
   useEffect(() => { return () => { esRef.current?.close(); }; }, []);
 
-  // Cleanup: delete uploaded audio on unmount
-  useEffect(() => {
-    return () => {
-      if (uploadedFile) {
-        fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uploadedFile?.audioId]);
-
   const persistDoneState = useCallback((nextDownloadUrl: string, nextDownloadFilename: string, nextVideoTitle?: string) => {
     const session = {
       phase: "done",
@@ -655,6 +645,39 @@ function BhagwatEditor({
 
     return false;
   }, [persistDoneState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateHistory = async () => {
+      try {
+        const res = await fetch(`${BASE}/api/bhagwat/render-history`, { cache: "no-store" });
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (cancelled || !Array.isArray(payload.entries)) return;
+        setHistory(prev => {
+          const merged = [...prev];
+          for (const entry of payload.entries) {
+            if (!entry || typeof entry.downloadUrl !== "string") continue;
+            if (merged.some(existing => existing.downloadUrl === `${BASE}${entry.downloadUrl}` || existing.downloadUrl === entry.downloadUrl)) {
+              continue;
+            }
+            merged.push({
+              id: entry.id ?? crypto.randomUUID(),
+              title: entry.title ?? entry.filename ?? "bhagwat_video.mp4",
+              filename: entry.filename ?? "bhagwat_video.mp4",
+              downloadUrl: entry.downloadUrl.startsWith("http") ? entry.downloadUrl : `${BASE}${entry.downloadUrl}`,
+              timestamp: typeof entry.timestamp === "number" ? entry.timestamp : Date.now(),
+            });
+          }
+          const sorted = merged.sort((a, b) => b.timestamp - a.timestamp).slice(0, MAX_HISTORY);
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(sorted));
+          return sorted;
+        });
+      } catch {}
+    };
+    void hydrateHistory();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (phase !== "rendering" || !renderJobId) return;
@@ -837,7 +860,9 @@ function BhagwatEditor({
         es.onerror = async () => {
           if (es.readyState === EventSource.CONNECTING) {
             setSseReconnecting(true);
-            await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
+            if (await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "")) {
+              es.close();
+            }
             return;
           }
           if (await tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "")) {
@@ -1121,7 +1146,7 @@ function BhagwatEditor({
         ? fetch(`${BASE}/api/bhagwat/render`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url, timeline: tl, videoDuration, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
+            body: JSON.stringify({ url, timeline: tl, videoDuration, videoTitle, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
           })
         : fetch(`${BASE}/api/bhagwat/render-audio`, {
             method: "POST",
@@ -1160,7 +1185,9 @@ function BhagwatEditor({
       es.onerror = async () => {
         if (es.readyState === EventSource.CONNECTING) {
           setSseReconnecting(true);
-          await tryResolveRenderJob(jobId, videoTitle);
+          if (await tryResolveRenderJob(jobId, videoTitle)) {
+            es.close();
+          }
           return;
         }
         if (await tryResolveRenderJob(jobId, videoTitle)) {
