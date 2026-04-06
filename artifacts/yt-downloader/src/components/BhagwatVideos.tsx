@@ -591,8 +591,10 @@ function BhagwatEditor({
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
 
+    // Reuse the jobId from the download URL so history entries cross-reference the actual render job
+    const jobId = nextDownloadUrl.split("/").pop() ?? crypto.randomUUID();
     const entry: HistoryEntry = {
-      id: crypto.randomUUID(),
+      id: jobId,
       title: (nextVideoTitle ?? videoTitle) || nextDownloadFilename,
       filename: nextDownloadFilename,
       downloadUrl: nextDownloadUrl,
@@ -867,6 +869,7 @@ function BhagwatEditor({
           const absoluteDownloadUrl = `${BASE}${d.downloadUrl}`;
           const filename = d.filename ?? "bhagwat_video.mp4";
           setDownloadUrl(absoluteDownloadUrl); setDownloadFilename(filename);
+          setDownloadAlive(true); // file was just created — no HEAD probe needed
           persistDoneState(absoluteDownloadUrl, filename, session.videoTitle ?? "");
           setPhase("done"); es.close();
         });
@@ -1280,7 +1283,13 @@ function BhagwatEditor({
       )}
 
       {/* Render History */}
-      <RenderHistory history={history} onClear={() => saveHistory([])} />
+      <RenderHistory
+        history={history}
+        onClear={() => {
+          saveHistory([]);
+          fetch(`${BASE}/api/bhagwat/render-history`, { method: "DELETE" }).catch(() => {});
+        }}
+      />
 
       {/* Audio Source + Mode */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">

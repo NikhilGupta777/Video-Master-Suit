@@ -2222,11 +2222,19 @@ async function runBhagwatRender(
               ytdlpError,
             );
           }
-          const audioFiles = readdirSync(BHAGWAT_TMP_DIR).filter((f) =>
-            f.startsWith(basename(audioPath)),
-          );
-          const resolved =
-            audioFiles.length > 0 ? join(BHAGWAT_TMP_DIR, audioFiles[0]) : null;
+          // Try common extensions directly first (deterministic, no race)
+          const AUDIO_EXTS = [".m4a", ".mp3", ".webm", ".ogg", ".opus", ".aac", ".mp4", ".flac", ".wav"];
+          let resolved: string | null = null;
+          for (const ext of AUDIO_EXTS) {
+            const candidate = `${audioPath}${ext}`;
+            if (existsSync(candidate)) { resolved = candidate; break; }
+          }
+          // Fallback: scan directory for any file with the expected prefix
+          if (!resolved) {
+            const prefix = basename(audioPath);
+            const found = readdirSync(BHAGWAT_TMP_DIR).find((f) => f.startsWith(prefix));
+            if (found) resolved = join(BHAGWAT_TMP_DIR, found);
+          }
           if (!resolved || !existsSync(resolved)) {
             throw new Error(
               ytdlpError
