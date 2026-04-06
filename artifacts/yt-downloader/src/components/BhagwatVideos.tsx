@@ -35,7 +35,7 @@ interface HistoryEntry {
 
 const HISTORY_KEY = "bhagwat_render_history";
 const SESSION_KEY = "bhagwat_active_session";
-const MAX_HISTORY = 8;
+const MAX_HISTORY = 20;
 const STORAGE_KEY = "bhagwat_unlocked";
 
 function formatSec(s: number) {
@@ -538,6 +538,7 @@ function BhagwatEditor({
   const [renderMessage, setRenderMessage] = useState("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState("bhagwat_video.mp4");
+  const [downloadAlive, setDownloadAlive] = useState<boolean | null>(null); // null=checking, true=alive, false=expired
   const [errorMsg, setErrorMsg] = useState("");
   const { toast } = useToast();
   const esRef = useRef<EventSource | null>(null);
@@ -678,6 +679,23 @@ function BhagwatEditor({
     void hydrateHistory();
     return () => { cancelled = true; };
   }, []);
+
+  // When we restore a "done" session, probe the server to confirm the file is still alive.
+  // Also triggered on fresh renders: downloadAlive is set to true immediately by the SSE handler.
+  useEffect(() => {
+    if (phase !== "done" || !downloadUrl || downloadAlive !== null) return;
+    let cancelled = false;
+    const checkAlive = async () => {
+      try {
+        const res = await fetch(downloadUrl, { method: "HEAD", cache: "no-store" });
+        if (!cancelled) setDownloadAlive(res.ok);
+      } catch {
+        if (!cancelled) setDownloadAlive(false);
+      }
+    };
+    void checkAlive();
+    return () => { cancelled = true; };
+  }, [phase, downloadUrl, downloadAlive]);
 
   useEffect(() => {
     if (phase !== "rendering" || !renderJobId) return;
@@ -1140,6 +1158,8 @@ function BhagwatEditor({
     setPhase("rendering");
     setRenderPercent(0);
     setRenderMessage("Starting…");
+    setDownloadUrl(null);
+    setDownloadAlive(null);
 
     try {
       const renderRes = await (sourceMode === "youtube"
@@ -1153,6 +1173,10 @@ function BhagwatEditor({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration, mode }),
           }));
+      if (!renderRes.ok) {
+        const errBody = await renderRes.json().catch(() => ({ error: "Render request failed" }));
+        throw new Error(errBody.error ?? `Render request failed (${renderRes.status})`);
+      }
       const { jobId } = await renderRes.json();
       setRenderJobId(jobId);
       const es = new EventSource(`${BASE}/api/bhagwat/render-status/${jobId}`);
@@ -1171,6 +1195,7 @@ function BhagwatEditor({
         const filename = d.filename ?? "bhagwat_video.mp4";
         setDownloadUrl(absoluteDownloadUrl);
         setDownloadFilename(filename);
+        setDownloadAlive(true);
         persistDoneState(absoluteDownloadUrl, filename);
         setPhase("done");
         es.close();
@@ -1656,28 +1681,62 @@ function BhagwatEditor({
         {phase === "done" && downloadUrl && (
           <motion.div
             initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-            className="glass-panel rounded-2xl p-5 space-y-4 border border-green-500/30 bg-green-500/5"
+            className={`glass-panel rounded-2xl p-5 space-y-4 border ${downloadAlive === false ? "border-red-500/30 bg-red-500/5" : "border-green-500/30 bg-green-500/5"}`}
           >
             <div className="flex items-center gap-3">
-              <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0" />
+              {downloadAlive === null
+                ? <Loader2 className="w-6 h-6 text-white/40 animate-spin shrink-0" />
+                : downloadAlive
+                  ? <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0" />
+                  : <AlertCircle className="w-6 h-6 text-red-400 shrink-0" />}
               <div>
-                <p className="font-semibold text-white">Video Ready!</p>
-                <p className="text-xs text-white/40">File deletes 10 min after you start downloading</p>
+                <p className="font-semibold text-white">
+                  {downloadAlive === null ? "Checking file…" : downloadAlive ? "Video Ready!" : "File Expired"}
+                </p>
+                <p className="text-xs text-white/40">
+                  {downloadAlive === null
+                    ? "Verifying the file is still available on the server"
+                    : downloadAlive
+                      ? "File deletes 10 min after you start downloading"
+                      : "The server was restarted and the file was lost. Re-render to get a new copy."}
+                </p>
               </div>
             </div>
-            <a
-              href={downloadUrl}
-              download={downloadFilename}
-              className="flex items-center justify-center gap-2 w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-3 rounded-xl transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              Download Video
-            </a>
+            {downloadAlive !== false && (
+              <a
+                href={downloadAlive ? downloadUrl : undefined}
+                download={downloadAlive ? downloadFilename : undefined}
+                aria-disabled={!downloadAlive}
+                className={`flex items-center justify-center gap-2 w-full font-semibold py-3 rounded-xl transition-colors ${
+                  downloadAlive
+                    ? "bg-green-600 hover:bg-green-500 text-white cursor-pointer"
+                    : "bg-white/10 text-white/30 cursor-not-allowed pointer-events-none"
+                }`}
+              >
+                {downloadAlive === null
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Checking…</>
+                  : <><Download className="w-4 h-4" /> Download Video</>}
+              </a>
+            )}
+            {downloadAlive === false && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setPhase("analyzed");
+                  setDownloadUrl(null);
+                  setDownloadAlive(null);
+                  localStorage.removeItem(SESSION_KEY);
+                }}
+                className="w-full bg-amber-600/80 hover:bg-amber-500/80 border-amber-500/30 text-white"
+              >
+                Re-render Video
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={() => {
                 localStorage.removeItem(SESSION_KEY);
-                setPhase("idle"); setTimeline(null); setDownloadUrl(null);
+                setPhase("idle"); setTimeline(null); setDownloadUrl(null); setDownloadAlive(null);
                 setUrl(""); setSuggestions([]); setReviewText("");
                 if (uploadedFile) {
                   fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});

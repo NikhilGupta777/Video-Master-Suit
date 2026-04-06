@@ -1510,7 +1510,7 @@ function ensureRenderJob(jobId: string): RenderJob | undefined {
   return undefined;
 }
 
-function readRenderHistory(limit = 8) {
+function readRenderHistory(limit = 20) {
   const entries: Array<{ id: string; title: string; filename: string; downloadUrl: string; timestamp: number }> = [];
   try {
     for (const entry of readdirSync(BHAGWAT_RENDERED_DIR)) {
@@ -1545,6 +1545,14 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     };
   if (!url || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "url and timeline are required" });
+    return;
+  }
+  const MAX_CONCURRENT_RENDERS = 3;
+  const activeRenders = [...renderJobs.values()].filter(
+    j => j.status === "pending" || j.status === "running",
+  ).length;
+  if (activeRenders >= MAX_CONCURRENT_RENDERS) {
+    res.status(429).json({ error: `Server is busy with ${activeRenders} active render(s). Please wait a moment and try again.` });
     return;
   }
   const jobId = randomUUID();
@@ -1660,6 +1668,20 @@ router.get("/bhagwat/render-history", (_req: Request, res: Response) => {
   res.json({ entries: readRenderHistory() });
 });
 
+router.delete("/bhagwat/render-history", (_req: Request, res: Response) => {
+  try {
+    for (const entry of readdirSync(BHAGWAT_RENDERED_DIR)) {
+      if (entry.endsWith(".json")) {
+        const jobId = entry.replace(/\.json$/i, "");
+        try { unlinkSync(renderMetaPath(jobId)); } catch {}
+        try { unlinkSync(renderVideoPath(jobId)); } catch {}
+        renderJobs.delete(jobId);
+      }
+    }
+  } catch {}
+  res.json({ ok: true });
+});
+
 router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
@@ -1688,8 +1710,9 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   }
   res.download(job.outputPath, job.filename ?? "bhagwat_video.mp4");
 
-  // Schedule file + job deletion 10 minutes after download is triggered
-  if (!job.deleteScheduled) {
+  // Schedule file + job deletion 10 minutes after a real GET download is triggered.
+  // HEAD requests (used by the history panel to check liveness) must NOT start the timer.
+  if (req.method !== "HEAD" && !job.deleteScheduled) {
     job.deleteScheduled = true;
     setTimeout(() => {
       try {
@@ -3259,6 +3282,14 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     res
       .status(404)
       .json({ error: "Audio file not found — please upload again" });
+    return;
+  }
+  const MAX_CONCURRENT_RENDERS = 3;
+  const activeRenders = [...renderJobs.values()].filter(
+    j => j.status === "pending" || j.status === "running",
+  ).length;
+  if (activeRenders >= MAX_CONCURRENT_RENDERS) {
+    res.status(429).json({ error: `Server is busy with ${activeRenders} active render(s). Please wait a moment and try again.` });
     return;
   }
 
