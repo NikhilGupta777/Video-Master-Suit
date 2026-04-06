@@ -455,8 +455,20 @@ async function ownKeyGeminiContent(
   userContent: string,
   label: string,
 ): Promise<string> {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured â€” add it in Secrets");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const replitBase = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const replitKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!process.env.GEMINI_API_KEY && !(replitBase && replitKey))
+    throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
+  if (!process.env.GEMINI_API_KEY && replitBase && replitKey) {
+    const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
+    const result = await client.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: userContent }] }],
+      ...(systemInstruction && { config: { systemInstruction } }),
+    });
+    return (result as any).text ?? "";
+  }
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
   let lastErr: unknown;
 
   for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
@@ -492,8 +504,25 @@ async function ownKeyGeminiStream(
   onChunk: (text: string) => void,
   label: string,
 ): Promise<string> {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured â€” add it in Secrets");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const replitBase = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const replitKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!process.env.GEMINI_API_KEY && !(replitBase && replitKey))
+    throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
+  if (!process.env.GEMINI_API_KEY && replitBase && replitKey) {
+    const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
+    const stream = client.models.generateContentStream({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: userContent }] }],
+      ...(systemInstruction && { config: { systemInstruction } }),
+    });
+    let fullText = "";
+    for await (const chunk of await stream) {
+      const text: string = (chunk as any).text ?? "";
+      if (text) { fullText += text; onChunk(text); }
+    }
+    return fullText;
+  }
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
   let lastErr: unknown;
 
   for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
