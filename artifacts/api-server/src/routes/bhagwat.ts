@@ -402,24 +402,7 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
       return;
     } catch (err) {
       console.warn(
-        "[bhagwat/img] Replit flash image gen failed, trying pro model:",
-        (err as Error).message,
-      );
-    }
-
-    // 1b. Brief pause then try the Replit pro image model
-    await new Promise((r) => setTimeout(r, 1500));
-    try {
-      const bytes = await withTimeout(
-        generateImageViaReplit(prompt, "gemini-2.5-flash-image"),
-        IMAGE_GEN_TIMEOUT_MS,
-        "Replit pro image generation",
-      );
-      writeFileSync(outputPath, bytes);
-      return;
-    } catch (err) {
-      console.warn(
-        "[bhagwat/img] Replit pro image gen also failed, falling back to own key:",
+        "[bhagwat/img] Replit flash image gen failed, falling back to own key:",
         (err as Error).message,
       );
     }
