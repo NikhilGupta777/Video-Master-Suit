@@ -94,43 +94,61 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
+      initial={{ opacity: 0, scale: 0.97 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="flex flex-col items-center justify-center py-20 px-4"
+      className="flex flex-col items-center justify-center py-16 px-4"
     >
-      <div className="w-full max-w-sm glass-panel rounded-3xl p-8 flex flex-col items-center gap-6">
-        <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(245,158,11,0.2)]">
-          <Lock className="w-8 h-8 text-amber-400" />
+      <div className="w-full max-w-sm rounded-3xl overflow-hidden border border-white/10 bg-[#0f0f14] shadow-2xl">
+        {/* Header band */}
+        <div className="px-8 pt-8 pb-6 flex flex-col items-center gap-4 bg-gradient-to-b from-amber-500/8 to-transparent">
+          <div className="relative">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/25 flex items-center justify-center shadow-[0_0_40px_rgba(245,158,11,0.25)]">
+              <Lock className="w-7 h-7 text-amber-400" />
+            </div>
+            <div className="absolute inset-0 rounded-2xl ring-1 ring-amber-500/20 ring-offset-2 ring-offset-transparent" />
+          </div>
+          <div className="text-center">
+            <h2 className="text-xl font-bold text-white tracking-tight">Bhagwat Studio</h2>
+            <p className="text-white/40 text-xs mt-1 tracking-wide">PASSWORD PROTECTED ACCESS</p>
+          </div>
         </div>
-        <div className="text-center">
-          <h2 className="text-2xl font-display font-bold text-white">Bhagwat Videos</h2>
-          <p className="text-white/50 text-sm mt-1">This section is password protected</p>
-        </div>
-        <div className="w-full space-y-3">
+        {/* Form */}
+        <div className="px-8 pb-8 space-y-3">
           <div className="relative">
             <input
               type={show ? "text" : "password"}
               value={pw}
               onChange={e => { setPw(e.target.value); setError(""); }}
               onKeyDown={e => e.key === "Enter" && attempt()}
-              placeholder="Enter password…"
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-amber-500/50 pr-10"
+              placeholder="Enter access password"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder:text-white/20 outline-none focus:border-amber-500/60 focus:shadow-[0_0_0_3px_rgba(245,158,11,0.08)] transition-all pr-10"
               autoFocus
             />
             <button
               type="button"
               onClick={() => setShow(s => !s)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/25 hover:text-white/60 transition-colors"
             >
               {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <Button onClick={attempt} disabled={loading || !pw} className="w-full bg-amber-600 hover:bg-amber-500 border-amber-500/30">
+          <AnimatePresence>
+            {error && (
+              <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="text-red-400 text-xs text-center">
+                {error}
+              </motion.p>
+            )}
+          </AnimatePresence>
+          <button
+            onClick={attempt}
+            disabled={loading || !pw}
+            className="w-full py-3 rounded-xl text-sm font-semibold transition-all bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-[0_0_24px_rgba(217,119,6,0.25)] hover:shadow-[0_0_32px_rgba(217,119,6,0.35)]"
+          >
             {loading
-              ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Checking…</>
-              : <><Unlock className="w-4 h-4 mr-2" /> Unlock</>}
-          </Button>
+              ? <span className="flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Verifying…</span>
+              : <span className="flex items-center justify-center gap-2"><Unlock className="w-4 h-4" /> Unlock Studio</span>}
+          </button>
         </div>
       </div>
     </motion.div>
@@ -193,46 +211,62 @@ function EditableTimelinePreview({
   };
 
   return (
-    <div className="glass-panel rounded-2xl p-4 space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h3 className="font-semibold text-white flex items-center gap-2">
-          <Film className="w-4 h-4 text-amber-400" />
-          AI Editor Plan
-        </h3>
-        <div className="flex items-center gap-2">
-          <span className="text-amber-300/70 text-xs">{kathas} katha scenes</span>
-          {bhajans > 0 && <span className="text-violet-300/70 text-xs">· {bhajans} bhajan sections</span>}
-          <span className="text-white/30 text-xs">· {formatSec(totalDur)}</span>
+    <div className="rounded-2xl border border-white/8 bg-[#0f0f14] overflow-hidden">
+      {/* Header */}
+      <div className="px-4 pt-4 pb-3 flex items-center justify-between flex-wrap gap-2 border-b border-white/6">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/20 flex items-center justify-center">
+            <Film className="w-3.5 h-3.5 text-amber-400" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-white">AI Timeline Plan</p>
+            <p className="text-[10px] text-white/30 uppercase tracking-widest">
+              {kathas} katha · {bhajans > 0 ? `${bhajans} bhajan · ` : ""}{formatSec(totalDur)}
+            </p>
+          </div>
         </div>
-      </div>
-
-      {/* Timeline bar — shows segments positioned relative to the full video, with gaps */}
-      <div className="flex h-4 rounded-lg overflow-hidden">
-        {barItems.map((item, i) =>
-          item.kind === "gap" ? (
-            <div
-              key={`gap-${i}`}
-              style={{ width: `${item.pct}%` }}
-              className="h-full bg-white/8 shrink-0"
-              title="No image in this section"
-            />
-          ) : (
-            <div
-              key={`seg-${item.idx}`}
-              style={{ width: `${item.pct}%` }}
-              className={cn(
-                "h-full min-w-[2px] shrink-0",
-                item.seg.isBhajan ? "bg-violet-500/70" : "bg-amber-500/50",
-                sugByIdx[item.idx] ? "ring-1 ring-yellow-400/60" : "",
-              )}
-              title={`${formatSec(item.seg.startSec)} – ${formatSec(item.seg.endSec)} · ${item.seg.description}`}
-            />
-          )
+        {suggestions.length > 0 && (
+          <span className="flex items-center gap-1 text-[10px] bg-yellow-500/15 text-yellow-300 border border-yellow-500/25 px-2 py-1 rounded-full">
+            <Lightbulb className="w-2.5 h-2.5" /> {suggestions.length} suggestion{suggestions.length !== 1 ? "s" : ""}
+          </span>
         )}
       </div>
 
+      {/* Timeline scrubber bar */}
+      <div className="px-4 py-3 border-b border-white/6">
+        <div className="flex h-3 rounded-md overflow-hidden gap-px">
+          {barItems.map((item, i) =>
+            item.kind === "gap" ? (
+              <div
+                key={`gap-${i}`}
+                style={{ flex: `${item.pct} 0 0%` }}
+                className="h-full bg-white/5 shrink-0"
+                title="No image overlay in this region"
+              />
+            ) : (
+              <div
+                key={`seg-${item.idx}`}
+                style={{ flex: `${item.pct} 0 0%` }}
+                className={cn(
+                  "h-full min-w-[2px] shrink-0 transition-opacity hover:opacity-90",
+                  item.seg.isBhajan
+                    ? "bg-gradient-to-r from-violet-500 to-violet-400"
+                    : "bg-gradient-to-r from-amber-500 to-amber-400",
+                  sugByIdx[item.idx] ? "ring-1 ring-inset ring-yellow-400/50" : "",
+                )}
+                title={`${formatSec(item.seg.startSec)} – ${formatSec(item.seg.endSec)} · ${item.seg.description}`}
+              />
+            )
+          )}
+        </div>
+        <div className="flex justify-between mt-1">
+          <span className="text-[9px] text-white/20 tabular-nums">0:00</span>
+          <span className="text-[9px] text-white/20 tabular-nums">{formatSec(barDur)}</span>
+        </div>
+      </div>
+
       {/* Segment list */}
-      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+      <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
         {timeline.map((seg, i) => {
           const hasSuggestion = !!sugByIdx[i];
           const suggestion = sugByIdx[i];
@@ -241,63 +275,69 @@ function EditableTimelinePreview({
 
           return (
             <div key={i} className={cn(
-              "rounded-xl border p-2.5 space-y-1.5 transition-all",
-              seg.isBhajan ? "border-violet-500/20 bg-violet-500/5" : "border-white/8 bg-white/3",
-              hasSuggestion && "ring-1 ring-yellow-500/25",
+              "px-4 py-3 space-y-2 transition-all",
+              seg.isBhajan ? "bg-violet-500/3" : "",
+              hasSuggestion && "border-l-2 border-yellow-500/50",
+              !hasSuggestion && seg.isBhajan && "border-l-2 border-violet-500/30",
+              !hasSuggestion && !seg.isBhajan && "border-l-2 border-amber-500/20",
             )}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-white/30 tabular-nums text-xs shrink-0">
-                  {formatSec(seg.startSec)} – {formatSec(seg.endSec)}
+              {/* Row header */}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-white/25 tabular-nums font-mono shrink-0 w-20">
+                  {formatSec(seg.startSec)}–{formatSec(seg.endSec)}
                 </span>
                 {seg.isBhajan
-                  ? <Badge className="text-xs border border-violet-500/40 bg-violet-500/10 text-violet-300">♪ Bhajan</Badge>
-                  : <Badge className="text-xs border border-amber-500/30 bg-amber-500/8 text-amber-300/80">Katha</Badge>
+                  ? <span className="text-[10px] border border-violet-500/35 bg-violet-500/10 text-violet-300 px-1.5 py-0.5 rounded-md font-medium">♪ BHAJAN</span>
+                  : <span className="text-[10px] border border-amber-500/25 bg-amber-500/8 text-amber-400/80 px-1.5 py-0.5 rounded-md font-medium">KATHA</span>
                 }
+                <span className="text-[10px] text-white/20 tabular-nums ml-auto">#{i + 1}</span>
                 {hasSuggestion && (
                   <button
                     onClick={() => setExpandedSugIdx(isExpanded ? null : i)}
-                    className="ml-auto flex items-center gap-1 text-yellow-400 text-xs hover:text-yellow-300 transition-colors"
+                    className="flex items-center gap-1 text-[10px] text-yellow-400/80 hover:text-yellow-300 transition-colors"
                   >
                     <Lightbulb className="w-3 h-3" />
-                    suggestion
                     {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                   </button>
                 )}
               </div>
 
-              <p className="text-white/70 text-xs font-medium leading-snug">{seg.description}</p>
+              <p className="text-white/65 text-xs font-medium leading-snug">{seg.description}</p>
 
               {/* Image prompt — editable */}
               {isEditing ? (
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <textarea
                     value={editDraft}
                     onChange={e => setEditDraft(e.target.value)}
                     rows={3}
-                    className="w-full bg-white/8 border border-amber-500/40 rounded-lg px-3 py-2 text-xs text-white/80 outline-none focus:border-amber-400/60 resize-none"
+                    className="w-full bg-black/40 border border-amber-500/35 rounded-lg px-3 py-2 text-xs text-white/80 outline-none focus:border-amber-400/60 resize-none"
                     autoFocus
                   />
                   <div className="flex gap-1.5">
                     <button
                       onClick={() => saveEdit(i)}
-                      className="flex items-center gap-1 text-xs px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500/80 text-white rounded-lg transition-colors"
+                      className="flex items-center gap-1 text-xs px-3 py-1.5 bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg transition-colors font-medium"
                     >
                       <Check className="w-3 h-3" /> Save
                     </button>
                     <button
                       onClick={() => setEditingIdx(null)}
-                      className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/10 hover:bg-white/15 text-white/60 rounded-lg transition-colors"
+                      className="flex items-center gap-1 text-xs px-3 py-1.5 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
                     >
                       <X className="w-3 h-3" /> Cancel
                     </button>
                   </div>
                 </div>
               ) : (
-                <div className="group flex items-start gap-1.5">
-                  <p className="text-white/35 text-xs leading-snug italic flex-1">{seg.imagePrompt}</p>
+                <div className="group flex items-start gap-2">
+                  <div className="w-3 h-3 rounded-sm shrink-0 mt-0.5"
+                    style={{ background: seg.isBhajan ? "rgba(139,92,246,0.25)" : "rgba(245,158,11,0.2)" }}
+                  />
+                  <p className="text-white/30 text-xs leading-relaxed italic flex-1">{seg.imagePrompt}</p>
                   <button
                     onClick={() => startEdit(i, seg.imagePrompt)}
-                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-white/30 hover:text-amber-400 p-0.5 mt-0.5"
+                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-white/25 hover:text-amber-400 p-1 rounded-md hover:bg-amber-500/10"
                     title="Edit prompt"
                   >
                     <Pencil className="w-3 h-3" />
@@ -314,19 +354,19 @@ function EditableTimelinePreview({
                     exit={{ opacity: 0, height: 0 }}
                     className="overflow-hidden"
                   >
-                    <div className="mt-1 rounded-lg border border-yellow-500/25 bg-yellow-500/5 p-2.5 space-y-2">
-                      <p className="text-yellow-300/70 text-xs">{suggestion.reason}</p>
-                      <p className="text-white/60 text-xs italic leading-snug">{suggestion.improvedPrompt}</p>
-                      <div className="flex gap-1.5">
+                    <div className="mt-1 rounded-xl border border-yellow-500/20 bg-gradient-to-br from-yellow-500/5 to-transparent p-3 space-y-2">
+                      <p className="text-yellow-300/60 text-xs leading-relaxed">{suggestion.reason}</p>
+                      <p className="text-white/55 text-xs italic leading-snug border-l-2 border-yellow-500/30 pl-2">{suggestion.improvedPrompt}</p>
+                      <div className="flex gap-1.5 pt-0.5">
                         <button
                           onClick={() => { onAcceptSuggestion(suggestion); setExpandedSugIdx(null); }}
-                          className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/70 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 bg-yellow-600/70 hover:bg-yellow-500/80 text-white rounded-lg transition-colors font-medium"
                         >
                           <Check className="w-3 h-3" /> Accept
                         </button>
                         <button
                           onClick={() => { onDismissSuggestion(suggestion.segIdx); setExpandedSugIdx(null); }}
-                          className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 bg-white/6 hover:bg-white/10 text-white/40 rounded-lg transition-colors"
                         >
                           <X className="w-3 h-3" /> Dismiss
                         </button>
@@ -365,22 +405,28 @@ function HistoryDownloadRow({ entry }: { entry: HistoryEntry }) {
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-white/3 px-2.5 py-2">
-      <Film className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
+    <div className="flex items-center gap-3 rounded-xl bg-white/3 border border-white/5 px-3 py-2.5">
+      <div className={cn(
+        "w-6 h-6 rounded-md flex items-center justify-center shrink-0",
+        expired ? "bg-red-500/10" : "bg-amber-500/12"
+      )}>
+        <Film className={cn("w-3 h-3", expired ? "text-red-400/50" : "text-amber-400/70")} />
+      </div>
       <div className="flex-1 min-w-0">
-        <p className="text-xs text-white/70 truncate">{entry.title || entry.filename}</p>
-        <p className="text-xs text-white/30">{timeAgo(entry.timestamp)}</p>
+        <p className="text-xs text-white/65 truncate font-medium">{entry.title || entry.filename}</p>
+        <p className="text-[10px] text-white/25 mt-0.5">{timeAgo(entry.timestamp)}</p>
       </div>
       {expired ? (
-        <span className="shrink-0 text-[10px] text-red-400/70 px-2">Expired</span>
+        <span className="shrink-0 text-[10px] text-red-400/50 border border-red-500/20 px-2 py-0.5 rounded-md">Expired</span>
       ) : (
         <a
           href={entry.downloadUrl}
           download={entry.filename}
           onClick={handleDownload}
-          className="shrink-0 flex items-center gap-1 text-xs px-2.5 py-1 bg-green-600/40 hover:bg-green-500/50 text-white/80 rounded-lg transition-colors"
+          className="shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 bg-green-600/30 hover:bg-green-500/40 text-green-300 border border-green-500/25 rounded-lg transition-all font-medium"
         >
           {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+          {!checking && "Download"}
         </a>
       )}
     </div>
@@ -1483,138 +1529,175 @@ function BhagwatEditor({
         }}
       />
 
-      {/* Audio Source + Mode */}
-      <div className="glass-panel rounded-2xl p-5 space-y-4">
-        <h3 className="font-semibold text-white flex items-center gap-2">
-          <Wand2 className="w-4 h-4 text-amber-400" />
-          Create Devotional Image Video
-        </h3>
+      {/* Main Studio Control Card */}
+      <div className="rounded-2xl border border-white/8 bg-[#0f0f14] overflow-hidden">
 
-        {/* Source toggle */}
-        <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1">
-          <button
-            onClick={() => handleSwitchSource("youtube")}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all",
-              sourceMode === "youtube"
-                ? "bg-amber-600/70 text-white shadow-sm"
-                : "text-white/45 hover:text-white/70"
-            )}
-          >
-            <Youtube className="w-3.5 h-3.5" />
-            YouTube Video
-          </button>
-          <button
-            onClick={() => handleSwitchSource("upload")}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all",
-              sourceMode === "upload"
-                ? "bg-violet-600/70 text-white shadow-sm"
-                : "text-white/45 hover:text-white/70"
-            )}
-          >
-            <Headphones className="w-3.5 h-3.5" />
-            Upload Audio
-          </button>
+        {/* Card header */}
+        <div className="px-5 pt-4 pb-3 border-b border-white/6 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500/25 to-orange-500/10 border border-amber-500/20 flex items-center justify-center">
+            <Wand2 className="w-4 h-4 text-amber-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-white tracking-tight">Bhagwat Video Studio</h3>
+            <p className="text-[10px] text-white/30 uppercase tracking-widest mt-0.5">AI Devotional Image Video Generator</p>
+          </div>
         </div>
 
-        {/* Upload zone (only in upload mode) */}
-        {sourceMode === "upload" && (
-          <AudioUploadZone
-            uploadedFile={uploadedFile}
-            uploading={uploading}
-            uploadError={uploadError}
-            onFileSelected={handleFileSelected}
-            onRemove={handleRemoveFile}
-          />
-        )}
+        <div className="p-5 space-y-5">
+          {/* AUDIO SOURCE */}
+          <div className="space-y-2">
+            <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Audio Source</p>
+            <div className="flex items-center gap-1.5 bg-black/40 border border-white/8 rounded-xl p-1">
+              <button
+                onClick={() => handleSwitchSource("youtube")}
+                className={cn(
+                  "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all",
+                  sourceMode === "youtube"
+                    ? "bg-amber-600/80 text-white shadow-lg shadow-amber-900/30"
+                    : "text-white/35 hover:text-white/60 hover:bg-white/4"
+                )}
+              >
+                <Youtube className="w-3.5 h-3.5" />
+                YouTube URL
+              </button>
+              <button
+                onClick={() => handleSwitchSource("upload")}
+                className={cn(
+                  "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all",
+                  sourceMode === "upload"
+                    ? "bg-violet-600/80 text-white shadow-lg shadow-violet-900/30"
+                    : "text-white/35 hover:text-white/60 hover:bg-white/4"
+                )}
+              >
+                <Headphones className="w-3.5 h-3.5" />
+                Upload Audio
+              </button>
+            </div>
+          </div>
 
-        <div className="flex gap-2">
-          {([
-            { v: "full",  label: "Full Coverage", desc: "AI places images throughout the entire audio from start to end" },
-            { v: "smart", label: "AI Smart Placement", desc: "AI selects the most impactful moments for image overlays" },
-          ] as const).map(opt => (
+          {/* Upload zone */}
+          {sourceMode === "upload" && (
+            <AudioUploadZone
+              uploadedFile={uploadedFile}
+              uploading={uploading}
+              uploadError={uploadError}
+              onFileSelected={handleFileSelected}
+              onRemove={handleRemoveFile}
+            />
+          )}
+
+          {/* GENERATION MODE */}
+          <div className="space-y-2">
+            <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Generation Mode</p>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { v: "full",  label: "Full Coverage", icon: <ImageIcon className="w-4 h-4" />, desc: "Images across entire audio, start to end" },
+                { v: "smart", label: "AI Smart", icon: <Sparkles className="w-4 h-4" />, desc: "AI picks the most impactful moments" },
+              ] as const).map(opt => (
+                <button
+                  key={opt.v}
+                  onClick={() => setMode(opt.v)}
+                  className={cn(
+                    "rounded-xl border p-3 text-left transition-all group",
+                    mode === opt.v
+                      ? "bg-amber-500/12 border-amber-500/45 shadow-[0_0_16px_rgba(245,158,11,0.08)]"
+                      : "border-white/8 bg-black/20 hover:border-white/15 hover:bg-white/3"
+                  )}
+                >
+                  <div className={cn("mb-2 transition-colors", mode === opt.v ? "text-amber-400" : "text-white/25 group-hover:text-white/40")}>
+                    {opt.icon}
+                  </div>
+                  <div className={cn("font-semibold text-xs transition-colors", mode === opt.v ? "text-amber-300" : "text-white/50")}>
+                    {opt.label}
+                  </div>
+                  <div className="text-[10px] text-white/30 mt-0.5 leading-relaxed">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* WORKFLOW */}
+          <div className="space-y-2">
+            <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Workflow</p>
             <button
-              key={opt.v}
-              onClick={() => setMode(opt.v)}
+              onClick={() => setAutonomousMode(p => !p)}
               className={cn(
-                "flex-1 rounded-xl border p-3 text-left transition-all",
-                mode === opt.v
-                  ? "bg-amber-500/15 border-amber-500/50 text-amber-300"
-                  : "border-white/10 text-white/50 hover:border-white/20 hover:text-white/70"
+                "w-full flex items-center gap-4 rounded-xl border px-4 py-3.5 text-left transition-all",
+                autonomousMode
+                  ? "bg-violet-500/10 border-violet-500/35 shadow-[0_0_16px_rgba(139,92,246,0.06)]"
+                  : "border-white/8 bg-black/20 hover:border-white/15"
               )}
             >
-              <div className="font-semibold text-sm">{opt.label}</div>
-              <div className="text-xs opacity-70 mt-0.5">{opt.desc}</div>
+              {/* Toggle pill */}
+              <div className={cn(
+                "w-10 h-5.5 rounded-full relative flex items-center transition-all shrink-0",
+                autonomousMode ? "bg-violet-500" : "bg-white/15"
+              )} style={{ height: "22px" }}>
+                <div className={cn(
+                  "absolute w-4 h-4 rounded-full bg-white shadow-md transition-all mx-0.5",
+                  autonomousMode ? "left-auto right-0.5" : "left-0.5"
+                )} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className={cn("text-sm font-semibold flex items-center gap-1.5", autonomousMode ? "text-violet-300" : "text-white/50")}>
+                  <Zap className="w-3.5 h-3.5" />
+                  Autonomous Mode
+                  {autonomousMode && (
+                    <span className="flex items-center gap-1 text-[9px] bg-violet-500/20 text-violet-300 border border-violet-500/25 px-1.5 py-0.5 rounded-full font-normal ml-0.5">
+                      <Cloud className="w-2.5 h-2.5" /> fire &amp; forget
+                    </span>
+                  )}
+                </div>
+                <div className={cn("text-xs mt-0.5 leading-relaxed", autonomousMode ? "text-violet-300/50" : "text-white/30")}>
+                  {autonomousMode
+                    ? "Analyse → AI review → render · close the tab anytime"
+                    : "Manual: inspect & edit timeline before rendering"}
+                </div>
+              </div>
             </button>
-          ))}
-        </div>
-
-        {/* Autonomous mode toggle */}
-        <button
-          onClick={() => setAutonomousMode(p => !p)}
-          className={cn(
-            "w-full flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all",
-            autonomousMode
-              ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
-              : "border-white/10 text-white/50 hover:border-white/20 hover:text-white/70"
-          )}
-        >
-          <div className={cn(
-            "w-9 h-5 rounded-full flex items-center transition-all shrink-0",
-            autonomousMode ? "bg-violet-500 justify-end" : "bg-white/15 justify-start"
-          )}>
-            <div className="w-4 h-4 rounded-full bg-white mx-0.5 shadow" />
           </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5" />
-              Autonomous Mode
-              {autonomousMode && (
-                <span className="flex items-center gap-1 text-[9px] bg-violet-500/20 text-violet-300 border border-violet-500/25 px-1.5 py-0.5 rounded-full font-normal">
-                  <Cloud className="w-2.5 h-2.5" /> fire &amp; forget
-                </span>
+
+          {/* PRIMARY CTA */}
+          <div className="space-y-2">
+            <button
+              onClick={handleAnalyze}
+              disabled={
+                phase === "analyzing" || phase === "rendering" || reviewing ||
+                (sourceMode === "upload" && !uploadedFile) ||
+                uploading
+              }
+              className={cn(
+                "w-full relative py-4 rounded-xl text-sm font-bold transition-all overflow-hidden group",
+                "bg-gradient-to-r from-amber-600 via-orange-500 to-amber-600 text-white",
+                "shadow-[0_0_30px_rgba(217,119,6,0.3)] hover:shadow-[0_0_40px_rgba(217,119,6,0.45)]",
+                "disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none",
               )}
-            </div>
-            <div className="text-xs opacity-60 mt-0.5">
-              {autonomousMode
-                ? "Analyse → AI review → render · close the tab anytime, result saves to history"
-                : "Manual: review & edit timeline before rendering"}
-            </div>
-          </div>
-        </button>
-
-        <div className="flex gap-2">
-          <Button
-            onClick={handleAnalyze}
-            disabled={
-              phase === "analyzing" || phase === "rendering" || reviewing ||
-              (sourceMode === "upload" && !uploadedFile) ||
-              uploading
-            }
-            className="flex-1 bg-amber-600 hover:bg-amber-500 border-amber-500/30"
-          >
-            {phase === "analyzing" ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</>
-            ) : reviewing ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> AI reviewing…</>
-            ) : uploading ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Uploading…</>
-            ) : (
-              <><Bot className="w-4 h-4 mr-2" /> Analyze & Generate Timeline</>
-            )}
-          </Button>
-
-          {/* Stop button — visible while actively processing */}
-          {(phase === "analyzing" || phase === "rendering" || reviewing) && (
-            <Button
-              onClick={handleStop}
-              className="bg-red-600 hover:bg-red-500 border-red-500/30 text-white px-4 shrink-0"
-              title="Stop processing"
             >
-              <Square className="w-4 h-4 fill-current" />
-            </Button>
-          )}
+              {/* shimmer sweep */}
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-in-out pointer-events-none" />
+              <span className="relative flex items-center justify-center gap-2.5">
+                {phase === "analyzing" ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing audio…</>
+                ) : reviewing ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> AI reviewing plan…</>
+                ) : uploading ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Uploading audio…</>
+                ) : (
+                  <><Bot className="w-4 h-4" /> Analyze &amp; Generate Timeline</>
+                )}
+              </span>
+            </button>
+
+            {/* Stop button */}
+            {(phase === "analyzing" || phase === "rendering" || reviewing) && (
+              <button
+                onClick={handleStop}
+                className="w-full py-2 rounded-xl text-xs font-medium border border-red-500/25 bg-red-600/15 hover:bg-red-600/25 text-red-400 transition-all flex items-center justify-center gap-2"
+              >
+                <Square className="w-3 h-3 fill-current" /> Stop processing
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
