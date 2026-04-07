@@ -5,6 +5,7 @@ import {
   Download, Wand2, Bot, FileText, Wifi, Eye, EyeOff, Sparkles, ImageIcon,
   Pencil, X, Lightbulb, ChevronDown, ChevronUp, Clock, Check, Scissors,
   Upload, Music, Youtube, Headphones, Trash2, Square, Zap,
+  ChevronRight, Cloud, RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -392,13 +393,16 @@ function RenderHistory({
   onClear,
   pendingRenders,
   currentRenderJobId,
+  onRefresh,
 }: {
   history: HistoryEntry[];
   onClear: () => void;
   pendingRenders: PendingRender[];
   currentRenderJobId: string | null;
+  onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Background renders — exclude the one currently shown in main UI
   const backgroundPending = pendingRenders.filter(r => r.jobId !== currentRenderJobId);
@@ -409,10 +413,21 @@ function RenderHistory({
     if (backgroundPending.length > 0) setOpen(true);
   }, [backgroundPending.length]);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await onRefresh();
+    setTimeout(() => setRefreshing(false), 800);
+  };
+
   if (total === 0) return null;
 
   return (
-    <div className="glass-panel rounded-2xl overflow-hidden">
+    <div className={cn(
+      "rounded-2xl overflow-hidden transition-all duration-500",
+      backgroundPending.length > 0
+        ? "ring-1 ring-amber-500/30 shadow-[0_0_20px_rgba(245,158,11,0.08)] glass-panel"
+        : "glass-panel"
+    )}>
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between p-3 hover:bg-white/3 transition-colors"
@@ -421,10 +436,14 @@ function RenderHistory({
           <Clock className="w-4 h-4 text-white/25" />
           Recent renders ({total})
           {backgroundPending.length > 0 && (
-            <span className="flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/25 px-1.5 py-0.5 rounded-full">
+            <motion.span
+              animate={{ opacity: [1, 0.6, 1] }}
+              transition={{ repeat: Infinity, duration: 2 }}
+              className="flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/25 px-1.5 py-0.5 rounded-full"
+            >
               <Loader2 className="w-2.5 h-2.5 animate-spin" />
-              {backgroundPending.length} in&nbsp;progress
-            </span>
+              {backgroundPending.length} rendering
+            </motion.span>
           )}
         </span>
         {open ? <ChevronUp className="w-4 h-4 text-white/25" /> : <ChevronDown className="w-4 h-4 text-white/25" />}
@@ -436,31 +455,60 @@ function RenderHistory({
             initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
             className="overflow-hidden"
           >
-            <div className="px-3 pb-3 space-y-1.5 border-t border-white/8 pt-2.5">
-              <p className="text-[10px] text-white/20 pt-1 pb-0.5">Downloads expire when the server restarts. Re-render if a link no longer works.</p>
+            <div className="px-3 pb-3 space-y-2 border-t border-white/8 pt-3">
 
               {/* Background renders in progress */}
               {backgroundPending.map(r => (
-                <div key={r.jobId} className="flex items-center gap-2 rounded-lg bg-amber-500/5 border border-amber-500/20 px-2.5 py-2">
-                  <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-white/70 truncate">{r.videoTitle || "Rendering…"}</p>
-                    <p className="text-xs text-white/30">Started {timeAgo(r.startedAt)} · Running in background</p>
+                <motion.div
+                  key={r.jobId}
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex items-center gap-2.5 rounded-xl bg-gradient-to-r from-amber-500/8 to-orange-500/5 border border-amber-500/25 px-3 py-2.5"
+                >
+                  <div className="relative shrink-0">
+                    <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center">
+                      <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                    </div>
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                   </div>
-                </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-white/75 font-medium truncate">{r.videoTitle || "Rendering…"}</p>
+                    <p className="text-[10px] text-white/35 mt-0.5">Started {timeAgo(r.startedAt)} · Server is rendering</p>
+                  </div>
+                  <button
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    title="Check status now"
+                    className="shrink-0 w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 text-white/35 hover:text-white/60 flex items-center justify-center transition-colors"
+                  >
+                    <RotateCcw className={cn("w-3 h-3", refreshing && "animate-spin")} />
+                  </button>
+                </motion.div>
               ))}
+
+              {/* Section divider when both pending + history exist */}
+              {backgroundPending.length > 0 && history.length > 0 && (
+                <div className="flex items-center gap-2 py-0.5">
+                  <div className="flex-1 h-px bg-white/6" />
+                  <span className="text-[9px] text-white/20 uppercase tracking-widest">Completed</span>
+                  <div className="flex-1 h-px bg-white/6" />
+                </div>
+              )}
 
               {/* Completed entries */}
               {history.map(entry => (
                 <HistoryDownloadRow key={entry.id} entry={entry} />
               ))}
 
-              <button
-                onClick={onClear}
-                className="w-full text-xs text-white/20 hover:text-white/40 py-1 transition-colors"
-              >
-                Clear history
-              </button>
+              <div className="flex items-center justify-between pt-1">
+                <p className="text-[10px] text-white/18">Downloads expire when the server restarts.</p>
+                <button
+                  onClick={onClear}
+                  className="text-[10px] text-white/20 hover:text-white/40 transition-colors"
+                >
+                  Clear all
+                </button>
+              </div>
             </div>
           </motion.div>
         )}
@@ -1427,6 +1475,7 @@ function BhagwatEditor({
         history={history}
         pendingRenders={pendingRenders}
         currentRenderJobId={renderJobId}
+        onRefresh={checkPendingRenders}
         onClear={() => {
           saveHistory([]);
           savePendingRenders([]);
@@ -1521,10 +1570,15 @@ function BhagwatEditor({
             <div className="text-sm font-semibold flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5" />
               Autonomous Mode
+              {autonomousMode && (
+                <span className="flex items-center gap-1 text-[9px] bg-violet-500/20 text-violet-300 border border-violet-500/25 px-1.5 py-0.5 rounded-full font-normal">
+                  <Cloud className="w-2.5 h-2.5" /> fire &amp; forget
+                </span>
+              )}
             </div>
             <div className="text-xs opacity-60 mt-0.5">
               {autonomousMode
-                ? "Auto: analyse → AI review → render (one click)"
+                ? "Analyse → AI review → render · close the tab anytime, result saves to history"
                 : "Manual: review & edit timeline before rendering"}
             </div>
           </div>
@@ -1775,130 +1829,187 @@ function BhagwatEditor({
 
       {/* Render Progress */}
       <AnimatePresence>
-        {phase === "rendering" && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            className="glass-panel rounded-2xl p-5 space-y-4"
-          >
-            <div className="flex items-center gap-3">
-              <Loader2 className="w-5 h-5 text-amber-400 animate-spin shrink-0" />
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-white">
-                  {renderPercent < 10 ? "Starting parallel tasks…" :
-                   renderPercent < 60 ? "Gemini is generating devotional images…" :
-                   renderPercent < 65 ? "Building image sequence…" :
-                   "Rendering with FFmpeg…"}
+        {phase === "rendering" && (() => {
+          const stage = renderPercent < 15 ? 1 : renderPercent < 65 ? 2 : 3;
+          const stages = [
+            { id: 1, label: "Download", icon: <FileText className="w-3 h-3" /> },
+            { id: 2, label: "AI Images", icon: <Sparkles className="w-3 h-3" /> },
+            { id: 3, label: "Render Video", icon: <Film className="w-3 h-3" /> },
+          ];
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="glass-panel rounded-2xl p-5 space-y-4 border border-amber-500/15"
+            >
+              {/* Header row */}
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                  <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-white leading-tight">
+                    {stage === 1 ? "Downloading audio…" :
+                     stage === 2 ? "Generating devotional images…" :
+                     "Compositing with FFmpeg…"}
+                  </p>
+                  <p className="text-xs text-white/35 mt-0.5 truncate">{renderMessage || "Starting…"}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-amber-400 font-bold text-lg tabular-nums leading-none">{renderPercent}%</span>
+                  <button
+                    onClick={handleStop}
+                    className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-red-600/70 hover:bg-red-500/80 text-white rounded-lg transition-colors border border-red-500/30"
+                    title="Stop rendering"
+                  >
+                    <Square className="w-2.5 h-2.5 fill-current" /> Stop
+                  </button>
+                </div>
+              </div>
+
+              {/* Stage breadcrumb */}
+              <div className="flex items-center gap-1">
+                {stages.map((s, i) => (
+                  <div key={s.id} className="flex items-center gap-1 flex-1">
+                    <div className={cn(
+                      "flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all",
+                      stage > s.id ? "bg-green-500/15 text-green-400 border border-green-500/20" :
+                      stage === s.id ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" :
+                      "bg-white/4 text-white/20 border border-white/8"
+                    )}>
+                      {stage > s.id
+                        ? <CheckCircle2 className="w-3 h-3 shrink-0" />
+                        : stage === s.id
+                          ? <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                          : s.icon}
+                      <span className="hidden sm:inline">{s.label}</span>
+                    </div>
+                    {i < stages.length - 1 && (
+                      <ChevronRight className="w-3 h-3 text-white/15 shrink-0" />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Progress bar */}
+              <div className="h-2.5 rounded-full bg-white/8 overflow-hidden">
+                <motion.div
+                  className="h-full rounded-full bg-gradient-to-r from-amber-500 via-orange-400 to-amber-400"
+                  style={{ boxShadow: "0 0 8px rgba(251,146,60,0.4)" }}
+                  animate={{ width: `${renderPercent}%` }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
+                />
+              </div>
+
+              {/* Background processing note */}
+              <div className="flex items-center gap-2.5 rounded-xl bg-white/3 border border-white/8 px-3 py-2.5">
+                <Cloud className="w-4 h-4 text-violet-400/60 shrink-0" />
+                <p className="text-xs text-white/35 leading-relaxed">
+                  Render runs on the server — <span className="text-white/55">you can close this tab</span> and come back later. The finished video will appear in your history.
                 </p>
-                <p className="text-xs text-white/40 mt-0.5">{renderMessage}</p>
               </div>
-              <span className="text-amber-400 font-bold text-sm tabular-nums">{renderPercent}%</span>
-              <button
-                onClick={handleStop}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-red-600/80 hover:bg-red-500 text-white rounded-lg transition-colors shrink-0"
-                title="Stop rendering"
-              >
-                <Square className="w-3 h-3 fill-current" /> Stop
-              </button>
-            </div>
-            <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-              <motion.div
-                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full"
-                animate={{ width: `${renderPercent}%` }}
-                transition={{ duration: 0.5 }}
-              />
-            </div>
-            {sseReconnecting && (
-              <div className="flex items-center gap-2">
-                <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
-                <span className="text-xs text-yellow-400/80">Reconnecting…</span>
-              </div>
-            )}
-            {autoImprovedCount !== null && autoImprovedCount > 0 && (
-              <p className="text-xs text-yellow-400/60 text-center flex items-center justify-center gap-1">
-                <Lightbulb className="w-3 h-3" />
-                Rendering with {autoImprovedCount} AI improvement{autoImprovedCount !== 1 ? "s" : ""} applied (prompts & new scenes)
-              </p>
-            )}
-            <p className="text-xs text-white/30 text-center">
-              {renderPercent < 60
-                ? "Audio downloading & AI images generating in parallel"
-                : "Compositing images with the audio track using FFmpeg"}
-            </p>
-          </motion.div>
-        )}
+
+              {sseReconnecting && (
+                <div className="flex items-center gap-2">
+                  <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
+                  <span className="text-xs text-yellow-400/70">Reconnecting to server…</span>
+                </div>
+              )}
+              {autoImprovedCount !== null && autoImprovedCount > 0 && (
+                <div className="flex items-center gap-2 rounded-lg bg-yellow-500/8 border border-yellow-500/20 px-3 py-2">
+                  <Lightbulb className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                  <p className="text-xs text-yellow-300/70">
+                    {autoImprovedCount} AI improvement{autoImprovedCount !== 1 ? "s" : ""} applied to prompts &amp; scenes
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Download Ready */}
       <AnimatePresence>
         {phase === "done" && downloadUrl && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-            className={`glass-panel rounded-2xl p-5 space-y-4 border ${downloadAlive === false ? "border-red-500/30 bg-red-500/5" : "border-green-500/30 bg-green-500/5"}`}
+            initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            className={`glass-panel rounded-2xl overflow-hidden border ${downloadAlive === false ? "border-red-500/30" : "border-green-500/25"}`}
           >
-            <div className="flex items-center gap-3">
-              {downloadAlive === null
-                ? <Loader2 className="w-6 h-6 text-white/40 animate-spin shrink-0" />
-                : downloadAlive
-                  ? <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0" />
-                  : <AlertCircle className="w-6 h-6 text-red-400 shrink-0" />}
-              <div>
-                <p className="font-semibold text-white">
-                  {downloadAlive === null ? "Checking file…" : downloadAlive ? "Video Ready!" : "File Expired"}
+            {/* Status banner */}
+            <div className={`px-5 py-4 flex items-center gap-3 ${downloadAlive === false ? "bg-red-500/8" : "bg-green-500/8"}`}>
+              <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                downloadAlive === null ? "bg-white/8" : downloadAlive ? "bg-green-500/20 shadow-[0_0_16px_rgba(34,197,94,0.2)]" : "bg-red-500/20"
+              }`}>
+                {downloadAlive === null
+                  ? <Loader2 className="w-5 h-5 text-white/40 animate-spin" />
+                  : downloadAlive
+                    ? <CheckCircle2 className="w-5 h-5 text-green-400" />
+                    : <AlertCircle className="w-5 h-5 text-red-400" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-white text-sm">
+                  {downloadAlive === null ? "Checking file…" : downloadAlive ? "Video ready!" : "File expired"}
                 </p>
-                <p className="text-xs text-white/40">
+                {videoTitle && (
+                  <p className="text-xs text-white/50 truncate mt-0.5">{videoTitle}</p>
+                )}
+                <p className="text-[10px] text-white/30 mt-0.5">
                   {downloadAlive === null
-                    ? "Verifying the file is still available on the server"
+                    ? "Verifying the file is still available"
                     : downloadAlive
                       ? "File deletes 10 min after you start downloading"
-                      : "The server was restarted and the file was lost. Re-render to get a new copy."}
+                      : "Server restarted — file was lost. Re-render to get a new copy."}
                 </p>
               </div>
             </div>
-            {downloadAlive !== false && (
-              <a
-                href={downloadAlive ? downloadUrl : undefined}
-                download={downloadAlive ? downloadFilename : undefined}
-                aria-disabled={!downloadAlive}
-                className={`flex items-center justify-center gap-2 w-full font-semibold py-3 rounded-xl transition-colors ${
-                  downloadAlive
-                    ? "bg-green-600 hover:bg-green-500 text-white cursor-pointer"
-                    : "bg-white/10 text-white/30 cursor-not-allowed pointer-events-none"
-                }`}
-              >
-                {downloadAlive === null
-                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Checking…</>
-                  : <><Download className="w-4 h-4" /> Download Video</>}
-              </a>
-            )}
-            {downloadAlive === false && (
+
+            <div className="p-4 space-y-2.5">
+              {downloadAlive !== false && (
+                <a
+                  href={downloadAlive ? downloadUrl : undefined}
+                  download={downloadAlive ? downloadFilename : undefined}
+                  aria-disabled={!downloadAlive}
+                  className={`flex items-center justify-center gap-2.5 w-full font-semibold py-3 rounded-xl text-sm transition-all ${
+                    downloadAlive
+                      ? "bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 text-white cursor-pointer shadow-[0_0_20px_rgba(34,197,94,0.2)]"
+                      : "bg-white/8 text-white/25 cursor-not-allowed pointer-events-none"
+                  }`}
+                >
+                  {downloadAlive === null
+                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Checking…</>
+                    : <><Download className="w-4 h-4" /> Download Video</>}
+                </a>
+              )}
+              {downloadAlive === false && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setPhase("analyzed");
+                    setDownloadUrl(null);
+                    setDownloadAlive(null);
+                    localStorage.removeItem(SESSION_KEY);
+                  }}
+                  className="w-full bg-amber-600/80 hover:bg-amber-500/80 border-amber-500/30 text-white"
+                >
+                  Re-render Video
+                </Button>
+              )}
               <Button
                 size="sm"
                 onClick={() => {
-                  setPhase("analyzed");
-                  setDownloadUrl(null);
-                  setDownloadAlive(null);
                   localStorage.removeItem(SESSION_KEY);
+                  setPhase("idle"); setTimeline(null); setDownloadUrl(null); setDownloadAlive(null);
+                  setUrl(""); setSuggestions([]); setReviewText("");
+                  if (uploadedFile) {
+                    fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
+                    setUploadedFile(null);
+                  }
                 }}
-                className="w-full bg-amber-600/80 hover:bg-amber-500/80 border-amber-500/30 text-white"
+                className="w-full bg-white/5 hover:bg-white/8 border-white/8 text-white/40 hover:text-white/60"
               >
-                Re-render Video
+                Start new video
               </Button>
-            )}
-            <Button
-              size="sm"
-              onClick={() => {
-                localStorage.removeItem(SESSION_KEY);
-                setPhase("idle"); setTimeline(null); setDownloadUrl(null); setDownloadAlive(null);
-                setUrl(""); setSuggestions([]); setReviewText("");
-                if (uploadedFile) {
-                  fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
-                  setUploadedFile(null);
-                }
-              }}
-              className="w-full bg-white/5 hover:bg-white/10 border-white/10 text-white/50"
-            >
-              Start New Video
-            </Button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
