@@ -690,11 +690,11 @@ function BhagwatEditor({
 
   // Poll every 30s while there are background renders not yet shown in main UI
   useEffect(() => {
-    const backgroundPending = pendingRenders.filter(r => r.jobId !== renderJobId);
-    if (backgroundPending.length === 0) return;
+    const backgroundCount = pendingRenders.filter(r => r.jobId !== renderJobId).length;
+    if (backgroundCount === 0) return;
     const timer = setInterval(() => void checkPendingRenders(), 30_000);
     return () => clearInterval(timer);
-  }, [pendingRenders, renderJobId, checkPendingRenders]);
+  }, [pendingRenders.length, renderJobId, checkPendingRenders]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
