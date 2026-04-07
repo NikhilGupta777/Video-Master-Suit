@@ -1701,39 +1701,60 @@ function BhagwatEditor({
         </div>
       </div>
 
-      {/* Analysis Steps */}
+      {/* Analysis Pipeline */}
       <AnimatePresence>
         {(phase === "analyzing" || phase === "analyzed" || phase === "rendering" || phase === "done") && Object.keys(steps).length > 0 && (
           <motion.div
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            className="glass-panel rounded-2xl p-4 space-y-3"
+            className="rounded-2xl border border-white/8 bg-[#0f0f14] overflow-hidden"
           >
-            {["metadata", "transcript", "ai"].map(name => {
-              const s = steps[name];
-              const Icon = STEP_ICONS[name];
-              const status = s?.status ?? "idle";
-              return (
-                <div key={name} className="flex items-center gap-3">
-                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0",
-                    status === "done" ? "bg-green-500/20" : status === "running" ? "bg-amber-500/20" : status === "warn" ? "bg-yellow-500/20" : "bg-white/5"
-                  )}>
-                    {status === "running" ? <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /> :
-                     status === "done" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> :
-                     status === "warn" ? <AlertCircle className="w-3.5 h-3.5 text-yellow-400" /> :
-                     <Icon className="w-3.5 h-3.5 text-white/30" />}
+            <div className="px-4 pt-3 pb-2 border-b border-white/5">
+              <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Analysis Pipeline</p>
+            </div>
+            <div className="px-4 py-3 space-y-1">
+              {["metadata", "transcript", "ai"].map((name, idx) => {
+                const s = steps[name];
+                const Icon = STEP_ICONS[name];
+                const status = s?.status ?? "idle";
+                const isDone = status === "done";
+                const isRunning = status === "running";
+                const isWarn = status === "warn";
+                return (
+                  <div key={name} className="flex items-center gap-3 py-2">
+                    {/* Connector line + icon */}
+                    <div className="flex flex-col items-center shrink-0" style={{ width: 28 }}>
+                      {idx > 0 && (
+                        <div className={cn("w-px h-3 -mt-2 mb-1", isDone || isRunning ? "bg-amber-500/30" : "bg-white/8")} />
+                      )}
+                      <div className={cn(
+                        "w-7 h-7 rounded-lg flex items-center justify-center transition-all",
+                        isDone ? "bg-green-500/20 shadow-[0_0_10px_rgba(34,197,94,0.15)]" :
+                        isRunning ? "bg-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.15)]" :
+                        isWarn ? "bg-yellow-500/15" : "bg-white/4"
+                      )}>
+                        {isRunning ? <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /> :
+                         isDone ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> :
+                         isWarn ? <AlertCircle className="w-3.5 h-3.5 text-yellow-400" /> :
+                         <Icon className="w-3.5 h-3.5 text-white/20" />}
+                      </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className={cn("text-xs font-semibold transition-colors",
+                        isDone ? "text-green-400/90" : isRunning ? "text-amber-300" : "text-white/35"
+                      )}>{STEP_LABELS[name]}</span>
+                      {s?.message && <p className="text-[10px] text-white/30 truncate mt-0.5">{s.message}</p>}
+                    </div>
+                    {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-green-400/50 shrink-0" />}
+                    {isRunning && <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium text-white/80">{STEP_LABELS[name]}</span>
-                    {s?.message && <p className="text-xs text-white/40 truncate">{s.message}</p>}
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
             {sseReconnecting && phase === "analyzing" && (
-              <div className="flex items-center gap-2 pt-1">
+              <div className="flex items-center gap-2 px-4 pb-3">
                 <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
-                <span className="text-xs text-yellow-400/80">Reconnecting…</span>
+                <span className="text-xs text-yellow-400/70">Reconnecting to server…</span>
               </div>
             )}
           </motion.div>
